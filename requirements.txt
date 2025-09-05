@@ -6,3 +6,4 @@ python-dotenv>=0.15.0
 requests>=2.25.0
 ebaysdk>=2.0.0
 aiohttp>=3.9.0  # Add this line for the missing dependency
+python-multipart>=0.0.6
