@@ -11,20 +11,20 @@ def get_authorization_url():
     try:
         api = TradingConnection(
             config_file=None,  # ← CRITICAL: Added config_file=None
-            appid=os.getenv('EBAY_APP_ID', 'JustinHa-ReReSell-SBX-e11823bc1-b28e2f71'),
-            devid=os.getenv('EBAY_DEV_ID', 'a3376eb0-d27c-46a6-9a04-e6fdfed5e5fc'),
-            certid=os.getenv('EBAY_CERT_ID', 'SBX-l1823bcla4a9-aa79-4e52-8a77-735e'),
+            appid=os.getenv('EBAY_APP_ID'),
+            devid=os.getenv('EBAY_DEV_ID'),
+            certid=os.getenv('EBAY_CERT_ID'),
             domain='api.sandbox.ebay.com',  # Sandbox environment
             warnings=True
         )
         
         # Get session ID for authentication
         response = api.execute('GetSessionID', {
-            'RuName': os.getenv('EBAY_RU_NAME', 'Justin_Harris-JustinHa-ReReSe-palkxra')
+            'RuName': os.getenv('EBAY_RU_NAME')
         })
         
         session_id = response.reply.SessionID
-        auth_url = f"https://signin.sandbox.ebay.com/ws/eBayISAPI.dll?SignIn&runame={os.getenv('EBAY_RU_NAME', 'Justin_Harris-JustinHa-ReReSe-palkxra')}&SessID={session_id}"
+        auth_url = f"https://signin.sandbox.ebay.com/ws/eBayISAPI.dll?SignIn&runame={os.getenv('EBAY_RU_NAME')}&SessID={session_id}"
         
         return auth_url
         
@@ -37,9 +37,9 @@ async def exchange_session_for_token(session_id: str):
     try:
         api = TradingConnection(
             config_file=None,  # ← CRITICAL: Added config_file=None
-            appid=os.getenv('EBAY_APP_ID', 'JustinHa-ReReSell-SBX-e11823bc1-b28e2f71'),
-            devid=os.getenv('EBAY_DEV_ID', 'a3376eb0-d27c-46a6-9a04-e6fdfed5e5fc'),
-            certid=os.getenv('EBAY_CERT_ID', 'SBX-l1823bcla4a9-aa79-4e52-8a77-735e'),
+            appid=os.getenv('EBAY_APP_ID'),
+            devid=os.getenv('EBAY_DEV_ID'),
+            certid=os.getenv('EBAY_CERT_ID'),
             domain='api.sandbox.ebay.com',
             warnings=True
         )

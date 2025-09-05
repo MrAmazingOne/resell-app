@@ -5,17 +5,29 @@ Check if eBay credentials are valid
 import os
 from ebaysdk.trading import Connection as TradingConnection
 from ebaysdk.exception import ConnectionError
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def check_credentials():
     print("🔍 Checking eBay credentials...")
+    
+    # Get credentials from environment
+    appid = os.getenv('EBAY_APP_ID')
+    certid = os.getenv('EBAY_CERT_ID')
+    devid = os.getenv('EBAY_DEV_ID')
+    
+    if not all([appid, certid, devid]):
+        print("❌ Missing eBay credentials in environment variables")
+        return None
     
     # Test each credential combination
     test_cases = [
         {
             'name': 'Your current credentials',
-            'appid': 'JustinHa-ReReSell-SBX-e11823bc1-b28e2f71',
-            'certid': 'SBX-l1823bcla4a9-aa79-4e52-8a77-735e',
-            'devid': 'a3376eb0-d27c-46a6-9a04-e6fdfed5e5fc'
+            'appid': appid,
+            'certid': certid,
+            'devid': devid
         }
     ]
     
