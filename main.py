@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 import asyncio
 import aiohttp
 from enum import Enum
-from .ebay_integration import ebay_api  # Added eBay integration
+from ebay_integration import ebay_api  # Added eBay integration
 from dotenv import load_dotenv  # NEW: For .env file loading
 
 # Load environment variables from .env file
