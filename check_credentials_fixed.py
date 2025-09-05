@@ -1,3 +1,4 @@
+# check_credentials_fixed.py
 #!/usr/bin/env python3
 """
 Check if eBay credentials are valid - FIXED VERSION
@@ -8,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def check_credentials():
+def check_credentials_fixed():
     print("🔍 Checking eBay credentials (Fixed version)...")
     
     # Get credentials from environment
@@ -110,7 +111,7 @@ def test_finding_api():
         return False
 
 if __name__ == "__main__":
-    success1 = check_credentials()
+    success1 = check_credentials_fixed()
     success2 = test_finding_api()
     
     if success1 or success2:
