@@ -1,7 +1,7 @@
 fastapi>=0.104.1
 uvicorn>=0.24.0
 google-generativeai==0.3.0
-pillow==9.5.0 --only-binary=:all:  # This forces using pre-built wheels
+pillow>=10.0.0  # Use a version that supports Python 3.13
 python-dotenv>=0.15.0
 requests>=2.25.0
 ebaysdk>=2.0.0
