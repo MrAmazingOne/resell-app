@@ -1,7 +1,8 @@
 fastapi>=0.104.1
 uvicorn>=0.24.0
 google-generativeai==0.3.0
-pillow>=10.0.0  # Use a version that supports Python 3.13
+pillow>=10.0.0
 python-dotenv>=0.15.0
 requests>=2.25.0
 ebaysdk>=2.0.0
+aiohttp>=3.9.0  # Add this line for the missing dependency
