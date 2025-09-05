@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 import google.generativeai as genai
@@ -19,10 +19,6 @@ from ebay_integration import ebay_api
 from ebay_auth import get_authorization_url, exchange_session_for_token
 from dotenv import load_dotenv
 import uuid
-from redis import Redis
-from rq import Queue
-from rq.job import Job
-import threading
 
 # Load environment variables from .env file
 load_dotenv()
@@ -41,14 +37,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure Redis for job queue
-redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-redis_conn = Redis.from_url(redis_url)
-job_queue = Queue(connection=redis_conn, default_timeout=600)  # 10 minute timeout
-
-# Job storage
-jobs = {}
 
 # Configure Google Generative AI
 try:
@@ -244,6 +232,7 @@ def parse_json_response(response_text: str) -> List[Dict]:
     try:
         json_text = response_text.strip()
         
+        # Clean up JSON response
         if "```json" in json_text:
             json_start = json_text.find("```json") + 7
             json_end = json_text.find("```", json_start)
@@ -253,113 +242,17 @@ def parse_json_response(response_text: str) -> List[Dict]:
             json_end = json_text.rfind("```")
             json_text = json_text[json_start:json_end].strip()
         
-        json_text = re.sub(r'^[^{]*', '', json_text)
-        json_text = re.sub(r'[^}]*$', '', json_text)
+        # Remove any non-JSON content
+        json_match = re.search(r'\[.*\]|\{.*\}', json_text, re.DOTALL)
+        if json_match:
+            json_text = json_match.group(0)
         
         return json.loads(json_text)
         
     except Exception as e:
         logger.warning(f"JSON parsing failed: {e}")
+        # Return empty array instead of failing
         return []
-
-def combine_stage_results(stage1: List, stage2: List, stage3: List) -> List[Dict]:
-    """Combine results from all 3 stages into ultimate accuracy output"""
-    combined = []
-    
-    for i, (s1, s2, s3) in enumerate(zip(stage1, stage2, stage3)):
-        combined_item = {
-            "item_id": i + 1,
-            "title": s2.get("title", s1.get("title", "Unknown Item")),
-            "brand": s2.get("brand", s1.get("brand", "")),
-            "model": s2.get("model", s1.get("model", "")),
-            "year": s2.get("year", s1.get("year", "")),
-            "category": s2.get("category", s1.get("category", "")),
-            "description": s2.get("description", s1.get("description", "")),
-            "condition": s2.get("condition", s1.get("condition", "")),
-            "authenticity_checks": s2.get("authenticity_checks", []),
-            "price_range": s3.get("price_range", "$0-0"),
-            "suggested_cost": s3.get("suggested_cost", "$0"),
-            "profit_potential": s3.get("profit_potential", "$0"),
-            "market_insights": s3.get("market_insights", ""),
-            "resellability_rating": s3.get("resellability_rating", 5),
-            "ebay_specific_tips": s3.get("ebay_specific_tips", []),
-            "confidence": s2.get("confidence", 0.95),
-            "analysis_depth": "3-stage maximum accuracy",
-            "processing_time_seconds": 75
-        }
-        combined.append(combined_item)
-    
-    return combined
-
-def process_image_max_accuracy(job_data: Dict) -> Dict:
-    """3-STAGE ULTIMATE ACCURACY PROCESSING - 75 seconds total"""
-    try:
-        image_base64 = job_data['image_base64']
-        mime_type = job_data['mime_type']
-        
-        image_part = {
-            "mime_type": mime_type,
-            "data": image_base64
-        }
-        
-        # STAGE 1: BROAD IDENTIFICATION (25s)
-        stage1_prompt = """
-        ULTIMATE ACCURACY STAGE 1/3: BROAD OBJECT IDENTIFICATION
-        Identify EVERY potential resellable item in this image with 90%+ confidence.
-        Focus on electronics, designer fashion, collectibles, quality furniture.
-        Output: JSON array with initial identifications and confidence scores.
-        """
-        
-        logger.info("STAGE 1: Starting broad identification (25s)")
-        stage1_response = model.generate_content([stage1_prompt, image_part])
-        stage1_results = parse_json_response(stage1_response.text)
-        logger.info(f"STAGE 1: Found {len(stage1_results)} potential items")
-        
-        # STAGE 2: PRECISE IDENTIFICATION (25s)
-        stage2_prompt = """
-        ULTIMATE ACCURACY STAGE 2/3: PRECISE ITEM IDENTIFICATION
-        For EACH item from Stage 1, achieve 100% certainty.
-        Zoom in on EVERY visible character, number, logo, and symbol.
-        Identify EXACT model numbers, years, editions, variants.
-        Output: JSON array with definitive identifications.
-        """
-        
-        logger.info("STAGE 2: Starting precise identification (25s)")
-        stage2_response = model.generate_content([stage2_prompt, image_part])
-        stage2_results = parse_json_response(stage2_response.text)
-        logger.info(f"STAGE 2: Precisely identified {len(stage2_results)} items")
-        
-        # STAGE 3: MARKET ANALYSIS (25s)
-        stage3_prompt = """
-        ULTIMATE ACCURACY STAGE 3/3: REAL-TIME MARKET ANALYSIS
-        Determine EXACT current market value and profit potential for each identified item.
-        Analyze RECENT eBay sold listings for identical items.
-        Calculate REAL profit margins after fees.
-        Output: JSON array with complete market analysis.
-        """
-        
-        logger.info("STAGE 3: Starting market analysis (25s)")
-        stage3_response = model.generate_content([stage3_prompt, image_part])
-        stage3_results = parse_json_response(stage3_response.text)
-        logger.info(f"STAGE 3: Completed market analysis for {len(stage3_results)} items")
-        
-        final_results = combine_stage_results(stage1_results, stage2_results, stage3_results)
-        
-        return {
-            "status": "completed",
-            "result": {
-                "message": "3-STAGE ULTIMATE ACCURACY ANALYSIS COMPLETE",
-                "items": final_results,
-                "processing_time": "75s",
-                "analysis_stages": 3,
-                "confidence_level": "maximum",
-                "analysis_timestamp": datetime.now().isoformat()
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"3-stage processing failed: {e}")
-        return {"status": "failed", "error": str(e)}
 
 def process_image_standard(job_data: Dict) -> Dict:
     """Enhanced single-stage processing (25s) with maximum-like quality"""
@@ -378,8 +271,12 @@ def process_image_standard(job_data: Dict) -> Dict:
         if job_data.get('description'):
             prompt += f"\nUser-provided description: {job_data['description']}"
         
+        logger.info("Starting enhanced 25-second analysis...")
         response = model.generate_content([prompt, image_part])
+        logger.info("AI analysis completed, parsing response...")
+        
         ai_response = parse_json_response(response.text)
+        logger.info(f"Parsed {len(ai_response)} items from response")
         
         enhanced_items = []
         for item_data in ai_response:
@@ -468,14 +365,11 @@ async def create_upload_file(
     accuracy_mode: str = Form("maximum")
 ):
     try:
+        # Read the image
         image_bytes = await file.read()
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         
-        # FREE PLAN SMART ADJUSTMENT: Use enhanced standard mode for all requests
-        # This prevents 30-second timeout on Render's free plan while maintaining quality
-        effective_mode = "enhanced_standard"
-        if accuracy_mode == "maximum":
-            logger.info("Using enhanced standard mode (25s) instead of maximum (75s) to avoid timeout")
+        logger.info(f"Received upload request: {file.filename}, mode: {accuracy_mode}")
         
         # Process with enhanced standard mode (25-second maximum-like quality)
         result = process_image_standard({
@@ -486,20 +380,23 @@ async def create_upload_file(
         })
         
         if result['status'] == 'completed':
+            logger.info(f"Analysis completed successfully: {len(result['result']['items'])} items found")
             return result['result']
         else:
+            logger.error(f"Analysis failed: {result['error']}")
             raise HTTPException(status_code=500, detail=result['error'])
             
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-# JOB STATUS ENDPOINTS (kept for compatibility)
+# SIMPLIFIED JOB STATUS ENDPOINTS
 @app.get("/job/{job_id}/status")
 async def get_job_status(job_id: str):
     return {
         "status": "completed",
-        "message": "Direct processing mode - jobs complete immediately"
+        "message": "Direct processing mode - jobs complete immediately",
+        "job_id": job_id
     }
 
 @app.get("/job/{job_id}/result")
@@ -509,17 +406,13 @@ async def get_job_result(job_id: str):
 # DEBUG ENDPOINTS
 @app.get("/debug/endpoints")
 async def debug_endpoints():
-    import re
     endpoints = []
-    with open(__file__, 'r') as f:
-        content = f.read()
-        routes = re.findall(r'@app\.(get|post|put|delete)\(["\']([^"\']+)["\']\)', content)
-        for method, path in routes:
-            endpoints.append(f"{method.upper()} {path}")
+    for route in app.routes:
+        if hasattr(route, 'methods'):
+            endpoints.append(f"{list(route.methods)[0]} {route.path}")
     
     return {
         "endpoints": endpoints,
-        "auth_configured": "auth/ebay" in [e for e in endpoints if "auth" in e],
         "total_endpoints": len(endpoints)
     }
 
@@ -529,17 +422,10 @@ async def debug_routes():
     for route in app.routes:
         routes.append({
             "path": route.path,
-            "name": route.name,
+            "name": getattr(route, 'name', 'unnamed'),
             "methods": getattr(route, "methods", [])
         })
     return {"routes": routes}
-
-@app.get("/debug/jobs")
-async def debug_jobs():
-    return {
-        "total_jobs": len(jobs),
-        "message": "Direct processing mode - no job queue active"
-    }
 
 # BATCH PROCESSING ENDPOINT
 @app.post("/batch_analyze/")
@@ -609,8 +495,7 @@ async def health_check():
     return {
         "status": "healthy",
         "ai_configured": bool(model),
-        "ebay_configured": bool(ebay_api),
-        "redis_connected": redis_conn.ping() if redis_conn else False,
+        "ebay_configured": hasattr(ebay_api, 'search_completed_items'),
         "model": "gemini-2.5-flash-preview-05-20",
         "version": "3.0.0",
         "processing_mode": "enhanced_standard",
