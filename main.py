@@ -16,7 +16,7 @@ import asyncio
 import aiohttp
 from enum import Enum
 from ebay_integration import ebay_api  # Added eBay integration
-from ebay_auth import get_authorization_url, exchange_code_for_token  # NEW: Import auth functions
+from ebay_auth import get_authorization_url, exchange_session_for_token  # NEW: Import auth functions
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -221,16 +221,23 @@ class EnhancedAppItem:
 async def auth_ebay():
     """Redirect to eBay authorization"""
     auth_url = get_authorization_url()
-    return RedirectResponse(url=auth_url)
+    if auth_url:
+        return RedirectResponse(url=auth_url)
+    else:
+        raise HTTPException(status_code=500, detail="Failed to generate auth URL")
 
 @app.get("/auth/callback")
-async def auth_callback(code: str):
-    """Handle eBay OAuth callback"""
+async def auth_callback(SessID: str, runame: str):
+    """Handle eBay Legacy Auth callback"""
     try:
-        token_data = await exchange_code_for_token(code)
-        # Store token (in production, use database)
-        os.environ['EBAY_AUTH_TOKEN'] = token_data['access_token']
-        return RedirectResponse(url="/auth/success")
+        # The session ID is in the SessID parameter
+        token = await exchange_session_for_token(SessID)
+        if token:
+            # Store token
+            os.environ['EBAY_AUTH_TOKEN'] = token
+            return RedirectResponse(url="/auth/success")
+        else:
+            return RedirectResponse(url="/auth/failed")
     except Exception as e:
         logger.error(f"Auth callback error: {e}")
         return RedirectResponse(url="/auth/failed")
@@ -294,6 +301,25 @@ async def privacy_policy():
         </body>
     </html>
     """)
+
+# DEBUG ENDPOINT
+@app.get("/debug/endpoints")
+async def debug_endpoints():
+    """Show all available endpoints"""
+    import re
+    endpoints = []
+    with open(__file__, 'r') as f:
+        content = f.read()
+        # Find all route definitions
+        routes = re.findall(r'@app\.(get|post|put|delete)\(["\']([^"\']+)["\']\)', content)
+        for method, path in routes:
+            endpoints.append(f"{method.upper()} {path}")
+    
+    return {
+        "endpoints": endpoints,
+        "auth_configured": "auth/ebay" in [e for e in endpoints if "auth" in e],
+        "total_endpoints": len(endpoints)
+    }
 
 @app.post("/upload_item/")
 async def create_upload_file(
@@ -478,7 +504,8 @@ async def root():
             "auth": "/auth/ebay",
             "privacy": "/privacy",
             "upload": "/upload_item",
-            "health": "/health"
+            "health": "/health",
+            "debug": "/debug/endpoints"
         }
     }
 
