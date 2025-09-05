@@ -17,8 +17,9 @@ class eBayAPI:
             'appid': os.getenv('EBAY_APP_ID', 'JustinHa-ReReSell-SBX-e11823bc1-b28e2f71'),
             'devid': os.getenv('EBAY_DEV_ID', 'a3376eb0-d27c-46a6-9a04-e6fdfed5e5fc'),
             'certid': os.getenv('EBAY_CERT_ID', 'SBX-l1823bcla4a9-aa79-4e52-8a77-735e'),
-            'token': os.getenv('EBAY_AUTH_TOKEN', ''),  # You'll need to get this
+            'token': os.getenv('EBAY_AUTH_TOKEN', 'v^1.1#i^1#r^0#f^0#p^3#I^3#t^H4sIAAAAAAAA/+VZf2wbVx2P86NT6TrQupUCRUSmU9eEs+/OPtt31K6cX8RN86O22yYR1H139y5+zfnu+t67JKYDpZlW1G0M/oBO2kbVbWISaANpE9M0qk6ZoMCQkDYNiSEkJAYDqgmtm8SQJn68s5PUcbc29k3CAv9jvXffX5/vr/eLX9y0uef08Ol3twZuaj+/yC+2BwLCFn7zpq7eWzraP9nVxtcQBM4v7lrsXOr4y14CSqajZCFxbIvA7oWSaRGlMpkMuthSbEAQUSxQgkShmpJLjx5QxBCvONimtmabwe7MQDIoi3IiAaNQTAiCCOUEm7VWZebtZNAAsZgmJ4SIJMpG3NDZd0JcmLEIBRZNBkVelDhe5ngpL4iKIClSIiRE+elg92GICbItRhLig6mKuUqFF9fYen1TASEQUyYkmMqkh3Lj6czA4Fh+b7hGVmrFDzkKqEvWj/ptHXYfBqYLr6+GVKiVnKtpkJBgOFXVsF6okl41pgnzK64WRClqxERJFFUpCmX1Q3HlkI1LgF7fDm8G6ZxRIVWgRREt38ijzBvqcajRldEYE5EZ6Pb+DrrARAaCOBkc7EtPHcoNZoPduYkJbM8hHeoVpJFoVIjJcSGYopAwF0Jc0Axsz6woqkpbcXOdpn7b0pHnNNI9ZtM+yKyG9b7ha3zDiMatcZw2qGdRLV101YcRadoLajWKLi1aXlxhiTmiuzK8cQRWU+JqEnxYSQFUABOilhDioizFo+CapPBqvYnESHmxSU9MhD1boArKXAngWUgdE2iQ05h73RLESFcikiFGEgbk9JhscFHZMDhV0mOcYEDIQ6iqrPr/n/KDUoxUl8K1HKn/UAGZDOY024ETtom0crCepNJzVjJigSSDRUodJRyen58PzUdCNp4JizwvhCdHD+S0IiyxoK/SohsTc6iSGxpkXAQptOwwaxZY6jHl1kwwFcH6BMC03OeW2TgHTZP9rabvOgtT9bMfALXfRMwPeaaotZAO24RC3Rc0Hc4hDRaQ3hLIvFpfQ8cJvpCZ9gyyRiEt2q2BbQ2X1xAyA76wsf4JaGuhqmksrPtUGxAfZ+O4wvO+wKYdJ1MquRSoJsy0WCyjkhQTE77gOa7bItW3horML6iqVbYwPeELmrfsKggYCrVnoVXXP71abwGs2cGh7GBuuJAfHxkc84U2Cw0MSTHvYW21PE0fTA+l2W90+EhmempSGJuNG65sOEYmzWMeHM4vqHRunpIZa3hkmh/rH5+ey4FJy+VNmhPGwuO8VHJQf/rI8XQy6ctJOahh2GKty+h1ivnRcW02jmLh4sTI/FDvbP9BM+HGBsQDU7H4iGXM9dqD86PalD/w+fcpgxbAj6uJW6hUaYGNfIEcnLm2n3m1/l8GKciaHudjuiDLPFBlCWoxzZC97T778XHJ9xLVYhW/3yUUWcOAy8Is9DbBXK5vkoOCkBAjqiZwqpiAohH3t8dy/meXLuKdbloLmsdPmADgoJC3soY0uxS2ATvAe1OFisXdGyEKq26Z6dchDmEIdNsyyxvnm3HZgbXK/f5MXq3XMxKWf6Hq+ZtBaVDreuYGeJA1x45tNi43o3CNuQEeoGm2a9Fm1K2wNsBhuKaBTNM7oTejsIa9ETMtYJYp0kjzMaxcwDD3EjRTpI3KYXMliBm/BihgJ7wmEpgUbcfxslADeIPQK/ViGKxegKtVLrsaMxbp1TvHZsGu8bMugUzfUpyibUHfUoCuY6/WIWk6iGuyvFtC30Kqt9hN1QKyvL5LGmBxQLlSeToijrdqNNBYKCyFdAyMRurOY2qAHENmFNh4ptYxNRsKy6bIQFpVBnFVomHkNFEvHyinmeAS1sQbCm2VoVkfzEFs+7vbgTrCUKMFF6NW2oCwWo+sbisLwwBjRLi6TSbnAHN2AQNf+D3HtuK13UQ6lzsynvV3cTcA51rtoAAikXgMqjyni3GNi8ZAjJMBH+VgzNANqEtQMjRfmFvuqlKIS3E+7l3dbRRX3UTN08g1r2Lh9c/SqbbKT1gKvMQvBS61BwL8AM8JvfyeTR2HOjtuDhLW2kMEWLpqL4QQMEJsX2SxhQzD0CwsOwDh9m1tr17+Zm7q5ZHnzl788olToX2X2jbXvI6f/xK/Y+19fHOHsKXmsZzfefVLl/DRj28VJV7mJUEUJCkxzX/26tdOYXvnbRdiT929/MjkrjcefvGNe7njvz324p0uv3WNKBDoautcCrQ98qmLqXt6tn/swh/V537w5vP/GLrpvm2v7H7nq8t4zyuje/481nWqcNfupcFLZ2ho32NvPZXeRw497dz/KDo5+tKdt7z5o+VXL+w/u/eoedR+6NzAjqWzPfsOfO6BoUe/feQ0fJY++Py+B3ddufV7bcbAC1/4/s8+/5uX7/nWa888JpwoxPZslxZO/e31K7/8w+6un8O3lp/sWf77lu/+tO/tT5/8/V8/88TNP/768de3db19qe8YXd7/9JmDd128/V8nu4YWrpjnUruOfeXc5C+0+1/7Bnz2zEM/fPLy46PknctPaKdf2NknZLP3qr+6TcP34S3f+fXdO979ye1/yv+zB88Xxm/93R0f+YR+dNMD6Jn3vta+873Hv5j8t7tYjel/AHjv5wq3IAAA'),  # You'll need to get this
             'siteid': '0',  # US site
+            # CRITICAL FIX: Explicitly set config_file to None
             'config_file': None
         }
         
@@ -33,7 +34,12 @@ class eBayAPI:
         Search for completed items to analyze market prices
         """
         try:
-            api = FindingConnection(config=self.config, siteid='EBAY-US')
+            # CRITICAL FIX: Pass config_file=None explicitly
+            api = FindingConnection(
+                config_file=None,  # ← This fixes the YAML error
+                appid=self.config['appid'],
+                siteid='EBAY-US'
+            )
             
             request_data = {
                 'keywords': keywords,
@@ -76,7 +82,10 @@ class eBayAPI:
         Get detailed information about a specific item
         """
         try:
-            api = ShoppingConnection(config=self.config)
+            api = ShoppingConnection(
+                config_file=None,  # ← Fix here too
+                appid=self.config['appid']
+            )
             response = api.execute('GetSingleItem', {
                 'ItemID': item_id,
                 'IncludeSelector': 'Details,Description,ShippingCosts'
@@ -103,7 +112,14 @@ class eBayAPI:
         Get eBay category suggestions for an item
         """
         try:
-            api = TradingConnection(config=self.config)
+            api = TradingConnection(
+                config_file=None,  # ← Fix here too
+                appid=self.config['appid'],
+                certid=self.config['certid'], 
+                devid=self.config['devid'],
+                domain='api.sandbox.ebay.com',
+                warnings=True
+            )
             response = api.execute('GetCategorySuggestions', {
                 'Query': query
             })
@@ -157,7 +173,15 @@ class eBayAPI:
         List an item on eBay
         """
         try:
-            api = TradingConnection(config=self.config)
+            api = TradingConnection(
+                config_file=None,  # ← Fix here too
+                appid=self.config['appid'],
+                certid=self.config['certid'], 
+                devid=self.config['devid'],
+                token=self.config['token'],
+                domain='api.sandbox.ebay.com',
+                warnings=True
+            )
             
             # Build eBay listing request
             request = {
