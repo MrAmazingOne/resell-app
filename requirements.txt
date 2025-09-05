@@ -1,9 +1,8 @@
-fastapi==0.104.1
-uvicorn==0.24.0
+fastapi>=0.104.1
+uvicorn>=0.24.0
 google-generativeai==0.3.0
-pillow==10.1.0
-python-multipart==0.0.6
-aiohttp==3.9.1
-ebaysdk==2.2.0
-requests==2.31.0
-python-dotenv==1.0.1
+pillow==9.5.0  # Use a stable, compatible version
+python-dotenv>=0.15.0
+requests>=2.25.0
+ebaysdk>=2.0.0
+# Add any other dependencies your app needs
