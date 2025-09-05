@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse
 import google.generativeai as genai
 import os
 import json
@@ -15,10 +16,11 @@ import asyncio
 import aiohttp
 from enum import Enum
 from ebay_integration import ebay_api  # Added eBay integration
-from dotenv import load_dotenv  # NEW: For .env file loading
+from ebay_auth import get_authorization_url, exchange_code_for_token  # NEW: Import auth functions
+from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()  # NEW: This loads your API keys from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -214,6 +216,85 @@ class EnhancedAppItem:
             "ebay_specific_tips": self.ebay_specific_tips
         }
 
+# EBAY AUTH ENDPOINTS
+@app.get("/auth/ebay")
+async def auth_ebay():
+    """Redirect to eBay authorization"""
+    auth_url = get_authorization_url()
+    return RedirectResponse(url=auth_url)
+
+@app.get("/auth/callback")
+async def auth_callback(code: str):
+    """Handle eBay OAuth callback"""
+    try:
+        token_data = await exchange_code_for_token(code)
+        # Store token (in production, use database)
+        os.environ['EBAY_AUTH_TOKEN'] = token_data['access_token']
+        return RedirectResponse(url="/auth/success")
+    except Exception as e:
+        logger.error(f"Auth callback error: {e}")
+        return RedirectResponse(url="/auth/failed")
+
+@app.get("/auth/success")
+async def auth_success():
+    """eBay auth success page"""
+    return HTMLResponse("""
+    <html>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+            <h1 style="color: green;">✅ Authentication Successful!</h1>
+            <p>You have successfully authenticated with eBay.</p>
+            <p><a href="/" style="color: #007bff; text-decoration: none;">Return to ReReSell App</a></p>
+        </body>
+    </html>
+    """)
+
+@app.get("/auth/failed")
+async def auth_failed():
+    """eBay auth failure page"""
+    return HTMLResponse("""
+    <html>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+            <h1 style="color: red;">❌ Authentication Failed</h1>
+            <p>There was an issue authenticating with eBay.</p>
+            <p><a href="/auth/ebay" style="color: #007bff; text-decoration: none;">Try again</a></p>
+        </body>
+    </html>
+    """)
+
+@app.get("/privacy")
+async def privacy_policy():
+    """Privacy policy page for eBay requirements"""
+    return HTMLResponse("""
+    <html>
+        <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
+            <h1>Privacy Policy</h1>
+            <p><strong>ReReSell AI eBay Assistant</strong> respects your privacy and is committed to protecting your personal information.</p>
+            
+            <h2>Information We Collect</h2>
+            <p>We only collect information necessary for eBay integration:</p>
+            <ul>
+                <li>eBay OAuth tokens for API access</li>
+                <li>Item images and descriptions for analysis</li>
+                <li>Market data for pricing recommendations</li>
+            </ul>
+            
+            <h2>How We Use Your Information</h2>
+            <p>Your information is used solely for:</p>
+            <ul>
+                <li>eBay API authentication and listing management</li>
+                <li>AI analysis of items for resale potential</li>
+                <li>Market trend analysis and pricing recommendations</li>
+            </ul>
+            
+            <h2>Data Security</h2>
+            <p>We implement industry-standard security measures to protect your data.</p>
+            
+            <h2>Contact</h2>
+            <p>For privacy concerns, please contact us through the eBay Developer Program.</p>
+        </body>
+    </html>
+    """)
+
 @app.post("/upload_item/")
 async def create_upload_file(
     file: UploadFile = File(...),
@@ -379,27 +460,6 @@ async def ebay_search(keywords: str, category: Optional[str] = None):
         logger.error(f"eBay search failed: {e}")
         raise HTTPException(status_code=500, detail=f"eBay search failed: {str(e)}")
 
-# Add these new endpoints for eBay OAuth callback
-@app.get("/auth/callback")
-async def auth_callback(sessionid: str, token: str = None):
-    """Handle eBay authentication callback"""
-    if token:
-        # Save the token to environment or database
-        os.environ['EBAY_AUTH_TOKEN'] = token
-        return {"status": "success", "message": "Authentication successful!", "token": token[:20] + "..."}
-    else:
-        return {"status": "error", "message": "No token received"}
-
-@app.get("/auth/declined")
-async def auth_declined():
-    """Handle declined authentication"""
-    return {"status": "declined", "message": "Authentication was cancelled or declined"}
-
-@app.get("/privacy")
-async def privacy_policy():
-    """Simple privacy policy page"""
-    return {"privacy_policy": "This is a temporary privacy policy for testing purposes."}
-
 @app.get("/")
 async def root():
     """API health check"""
@@ -413,7 +473,13 @@ async def root():
             "Profit optimization",
             "eBay market integration",
             "Direct eBay listing"
-        ]
+        ],
+        "endpoints": {
+            "auth": "/auth/ebay",
+            "privacy": "/privacy",
+            "upload": "/upload_item",
+            "health": "/health"
+        }
     }
 
 @app.get("/health")
