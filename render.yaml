@@ -38,3 +38,7 @@ services:
         value: ${EBAY_CERT_ID}
       - key: EBAY_DEV_ID
         value: ${EBAY_DEV_ID}
+      - key: EBAY_RU_NAME
+        value: ${EBAY_RU_NAME}
+      - key: EBAY_AUTH_TOKEN
+        value: ${EBAY_AUTH_TOKEN}
