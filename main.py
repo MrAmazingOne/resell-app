@@ -19,6 +19,10 @@ from ebay_integration import ebay_api
 from ebay_auth import get_authorization_url, exchange_session_for_token
 from dotenv import load_dotenv
 import uuid
+import threading
+import queue
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 # Load environment variables from .env file
 load_dotenv()
@@ -60,6 +64,72 @@ class ItemCategory(Enum):
     BOOKS = "books"
     TOYS = "toys"
     UNKNOWN = "unknown"
+
+# In-memory job queue (persists for the lifetime of the process)
+job_queue = queue.Queue()
+job_storage = {}  # Stores job status and results
+job_lock = threading.Lock()
+
+# Thread pool for background processing
+executor = ThreadPoolExecutor(max_workers=1)  # Single worker thread
+
+def background_worker():
+    """Background worker that processes jobs from the queue"""
+    while True:
+        try:
+            job_id = job_queue.get(timeout=30)  # Wait for jobs with timeout
+            process_job(job_id)
+            job_queue.task_done()
+        except queue.Empty:
+            # No jobs, continue waiting
+            continue
+        except Exception as e:
+            print(f"Background worker error: {e}")
+            time.sleep(5)  # Wait before trying again
+
+def process_job(job_id):
+    """Process a single job"""
+    try:
+        with job_lock:
+            job_data = job_storage.get(job_id)
+            if not job_data:
+                return
+            
+            # Update status to processing
+            job_data['status'] = 'processing'
+            job_data['started_at'] = datetime.now().isoformat()
+            job_storage[job_id] = job_data
+        
+        # Your existing processing logic
+        result = process_image_standard(job_data)
+        
+        with job_lock:
+            if result['status'] == 'completed':
+                job_data['status'] = 'completed'
+                job_data['completed_at'] = datetime.now().isoformat()
+                job_data['result'] = result['result']
+            else:
+                job_data['status'] = 'failed'
+                job_data['error'] = result.get('error', 'Unknown error')
+                job_data['completed_at'] = datetime.now().isoformat()
+            
+            job_storage[job_id] = job_data
+            
+    except Exception as e:
+        with job_lock:
+            job_data = job_storage.get(job_id, {})
+            job_data['status'] = 'failed'
+            job_data['error'] = str(e)
+            job_data['completed_at'] = datetime.now().isoformat()
+            job_storage[job_id] = job_data
+        print(f"Job {job_id} failed: {e}")
+
+# Start background worker when app starts
+@app.on_event("startup")
+async def startup_event():
+    # Start background worker in a separate thread
+    threading.Thread(target=background_worker, daemon=True).start()
+    print("Background worker started")
 
 # ENHANCED MARKET ANALYSIS PROMPT
 market_analysis_prompt = """
@@ -337,26 +407,77 @@ async def create_upload_file(
         image_bytes = await file.read()
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         
-        logger.info(f"Received upload request: {file.filename}, mode: {accuracy_mode}")
+        # Create job ID
+        job_id = str(uuid.uuid4())
         
-        # Process with enhanced market analysis
-        result = process_image_standard({
+        # Store job data
+        job_data = {
             'image_base64': image_base64,
             'mime_type': file.content_type,
             'title': title,
-            'description': description
-        })
+            'description': description,
+            'accuracy_mode': accuracy_mode,
+            'status': 'queued',
+            'created_at': datetime.now().isoformat()
+        }
         
-        if result['status'] == 'completed':
-            logger.info(f"Analysis completed successfully: {len(result['result']['items'])} items found")
-            return result['result']
-        else:
-            logger.error(f"Analysis failed: {result['error']}")
-            raise HTTPException(status_code=500, detail=result['error'])
+        with job_lock:
+            job_storage[job_id] = job_data
+        
+        # Add to queue for processing
+        job_queue.put(job_id)
+        
+        logger.info(f"Job {job_id} queued for processing")
+        
+        return {
+            "message": "Analysis queued",
+            "job_id": job_id,
+            "status": "queued",
+            "estimated_time": "60-75 seconds" if accuracy_mode == "maximum" else "20-30 seconds",
+            "check_status_url": f"/job/{job_id}/status"
+        }
             
     except Exception as e:
-        logger.error(f"Processing failed: {e}")
+        logger.error(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+# Add job status endpoint
+@app.get("/job/{job_id}/status")
+async def get_job_status(job_id: str):
+    """Check status of a job"""
+    with job_lock:
+        job_data = job_storage.get(job_id)
+    
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    response = {
+        "job_id": job_id,
+        "status": job_data.get('status', 'unknown'),
+        "created_at": job_data.get('created_at')
+    }
+    
+    if job_data.get('status') == 'completed':
+        response["result"] = job_data.get('result')
+        response["completed_at"] = job_data.get('completed_at')
+    elif job_data.get('status') == 'failed':
+        response["error"] = job_data.get('error', 'Unknown error')
+        response["completed_at"] = job_data.get('completed_at')
+    elif job_data.get('status') == 'processing':
+        response["started_at"] = job_data.get('started_at')
+    
+    return response
+
+# Add cleanup endpoint (optional)
+@app.delete("/job/{job_id}")
+async def delete_job(job_id: str):
+    """Remove a job from storage"""
+    with job_lock:
+        if job_id in job_storage:
+            del job_storage[job_id]
+            return {"message": "Job deleted"}
+        else:
+            raise HTTPException(status_code=404, detail="Job not found")
 
 # eBay API test endpoint
 @app.get("/test_ebay/{keywords}")
