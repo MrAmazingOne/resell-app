@@ -27,7 +27,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Resell Pro API", version="3.0.0")
+app = FastAPI(title="AI Resell Pro API", version="3.1.0")
 
 # Add CORS middleware
 app.add_middleware(
@@ -61,90 +61,57 @@ class ItemCategory(Enum):
     TOYS = "toys"
     UNKNOWN = "unknown"
 
-# CATEGORY-SPECIFIC PROMPTS
-category_prompts = {
-    ItemCategory.ELECTRONICS: """
-    FOCUS ON: Model numbers, serial numbers, technical specifications, manufacturer logos, condition indicators.
-    IMPORTANT: Check for common failure points, battery health indicators, screen condition, and accessory compatibility.
-    PRICING: Consider depreciation curves for electronics and compatibility with modern systems.
-    """,
-    
-    ItemCategory.CLOTHING: """
-    FOCUS ON: Brand tags, size labels, material composition, care instructions, signs of wear.
-    IMPORTANT: Look for authenticity markers, vintage indicators, designer signatures, and fabric quality.
-    PRICING: Consider seasonal trends, brand popularity, and condition factors like stains or fading.
-    """,
-    
-    ItemCategory.FURNITURE: """
-    FOCUS ON: Construction quality, wood type, joinery methods, manufacturer marks, upholstery condition.
-    IMPORTANT: Check for structural integrity, repairs, woodworm, and original vs replacement parts.
-    PRICING: Consider mid-century modern premium, designer pieces, and regional style preferences.
-    """,
-    
-    ItemCategory.COLLECTIBLES: """
-    FOCUS ON: Edition numbers, signatures, certificates of authenticity, rarity indicators.
-    IMPORTANT: Look for reproduction markers, condition issues that affect collectibility, and complete sets.
-    PRICING: Consider auction records, collector demand spikes, and cultural relevance.
-    """,
-    
-    ItemCategory.BOOKS: """
-    FOCUS ON: Edition information, dust jackets, inscriptions, publisher marks, condition of binding.
-    IMPORTANT: Check for first edition indicators, author signatures, and completeness of multi-volume sets.
-    PRICING: Consider rarity, author popularity, and cultural significance.
-    """,
-    
-    ItemCategory.TOYS: """
-    FOCUS ON: Manufacturer stamps, copyright dates, completeness, battery compartments.
-    IMPORTANT: Look for vintage vs reproduction, working condition, and original packaging.
-    PRICING: Consider nostalgia factor, complete sets, and working condition.
-    """
-}
-
-# ENHANCED MARKET ANALYSIS PROMPT (25-second "maximum" quality)
+# ENHANCED MARKET ANALYSIS PROMPT
 market_analysis_prompt = """
-ULTRA-ACCURATE 25-SECOND ANALYSIS - MAXIMUM DETAIL IN MINIMUM TIME:
+EXPERT RESELL ANALYST - MAXIMUM ACCURACY ANALYSIS:
 
-You are an expert forensic resell analyst. Achieve maximum accuracy in a single pass by:
+You are analyzing items for resale profitability. Focus on:
 
-🔍 **CRITICAL FOCUS AREAS:**
-- ZOOM IN on EVERY character, number, logo, symbol, serial number
-- Identify EXACT model numbers, years, editions with 100% certainty
-- Capture ALL visible text no matter how small
-- Analyze materials, construction quality, condition markers
+🔍 **IDENTIFICATION PHASE:**
+- Extract EVERY visible text, number, logo, brand mark, model number
+- Identify materials, construction quality, age indicators
+- Note condition issues, wear patterns, damage
+- Capture size, dimensions, serial numbers
 
-📊 **COMPREHENSIVE OUTPUT REQUIREMENTS:**
-For EACH valuable item, provide ALL these details in JSON:
+📊 **MARKET ANALYSIS PHASE:**
+- Estimate current market value range based on condition
+- Consider brand popularity, rarity, demand trends
+- Factor in condition deductions and market saturation
+- Account for seasonal pricing variations
+
+💰 **PROFITABILITY ANALYSIS:**
+- Calculate realistic resale price range
+- Suggest maximum purchase price for profit
+- Estimate profit margins after fees (eBay: 13%, shipping: $8-15)
+- Rate resellability 1-10 based on demand/competition
+
+Return analysis in JSON format:
 
 {
-  "title": "eBay-optimized title with EXACT model numbers and key search terms",
-  "description": "Detailed description with ALL visible identifying features, condition notes, and specifications",
-  "price_range": "Current eBay market range based on recent sold listings for IDENTICAL items",
+  "title": "eBay-optimized title with brand, model, key features",
+  "description": "Detailed description with ALL visible details and condition notes",
+  "price_range": "Current market range: $X - $Y",
   "resellability_rating": 8,
-  "suggested_cost": "Maximum to pay for profitable resale",
-  "market_insights": "eBay-specific demand analysis and sell-through rates",
-  "authenticity_checks": "Specific authenticity markers to verify",
-  "profit_potential": "Estimated profit after eBay fees and shipping",
-  "category": "Most relevant eBay category",
-  "ebay_specific_tips": ["Tip 1", "Tip 2", "Tip 3"],
+  "suggested_cost": "Maximum to pay: $X (for profitable resale)",
+  "market_insights": "Market demand, competition level, selling tips",
+  "authenticity_checks": "Red flags to verify before purchase",
+  "profit_potential": "Expected profit: $X-Y after fees",
+  "category": "Primary eBay category",
+  "ebay_specific_tips": ["Photography tips", "Listing optimization", "Timing advice"],
   
-  // EXTENDED DETAILS (capture everything visible):
-  "brand": "EXACT brand from logos/text",
-  "model": "EXACT model number from visible text", 
-  "year": "Production year if identifiable",
+  // Extended details
+  "brand": "Exact brand if visible",
+  "model": "Model number/name if visible", 
+  "year": "Production year if determinable",
   "condition": "Detailed condition assessment",
-  "confidence": 0.95,
-  "analysis_depth": "25-second comprehensive",
-  "processing_time_seconds": 25
+  "confidence": 0.85,
+  "analysis_depth": "comprehensive",
+  "key_features": ["Notable features that add value"],
+  "comparable_items": "Similar items selling for $X-Y"
 }
 
-🎯 **SUCCESS CRITERIA:**
-- NO GUESSING: Only report what you can see with certainty
-- MAXIMUM PRECISION: Every character matters - zoom in completely
-- EBAY-FOCUSED: Base everything on actual eBay market data
-- TIME-AWARE: Complete analysis in under 25 seconds
-
-IMPORTANT: This is a SINGLE-PASS analysis but must achieve NEAR-MAXIMUM accuracy.
-Focus intensely on visible details and provide complete eBay market context.
+CRITICAL: Base pricing on actual market conditions, not retail prices.
+Account for condition issues that reduce value.
 """
 
 def detect_category(title: str, description: str) -> ItemCategory:
@@ -174,23 +141,51 @@ def detect_category(title: str, description: str) -> ItemCategory:
 def enhance_with_ebay_data(item_data: Dict) -> Dict:
     """Enhance AI analysis with real eBay market data"""
     try:
-        keywords = f"{item_data.get('brand', '')} {item_data.get('title', '')}".strip()
-        completed_items = ebay_api.search_completed_items(keywords, max_results=10)
+        # Create search keywords from item data
+        keywords = []
+        if item_data.get('brand'):
+            keywords.append(item_data['brand'])
+        if item_data.get('model'):
+            keywords.append(item_data['model'])
         
-        if completed_items:
-            prices = [item['price'] for item in completed_items]
-            avg_price = sum(prices) / len(prices)
+        # Fallback to title keywords if no brand/model
+        if not keywords:
+            title_words = item_data.get('title', '').split()[:3]  # First 3 words
+            keywords = [word for word in title_words if len(word) > 2]
+        
+        search_query = ' '.join(keywords)
+        
+        if search_query.strip():
+            logger.info(f"Searching eBay for: {search_query}")
+            market_analysis = ebay_api.analyze_market_trends(search_query)
             
-            if 'price_range' in item_data:
-                item_data['market_insights'] += f" Based on {len(completed_items)} recent eBay sales, similar items sold for ${min(prices):.2f}-${max(prices):.2f}."
-                item_data['price_range'] = f"${min(prices):.2f}-${max(prices):.2f}"
-            
+            # Update item data with real eBay market data
+            if market_analysis['confidence'] in ['high', 'medium']:
+                item_data['market_insights'] = f"eBay Analysis: {market_analysis['market_notes']}. " + item_data.get('market_insights', '')
+                item_data['price_range'] = market_analysis['price_range']
+                item_data['suggested_cost'] = f"${market_analysis['recommended_price']:.2f}"
+                
+                # Calculate profit potential
+                avg_price = market_analysis['average_price']
+                recommended_cost = market_analysis['recommended_price']
+                ebay_fees = avg_price * 0.13  # 13% eBay fees
+                shipping_cost = 10.00  # Average shipping
+                profit = avg_price - recommended_cost - ebay_fees - shipping_cost
+                
+                item_data['profit_potential'] = f"${profit:.2f} profit (after fees)" if profit > 0 else "Low profit margin"
+                
+            # Add eBay-specific tips
             item_data['ebay_specific_tips'] = [
-                "Use high-quality photos from multiple angles",
-                "Include measurements and detailed condition description",
-                "Offer combined shipping for multiple items",
-                "Consider auction format for rare items with uncertain value"
+                "Use all 12 photo slots with detailed shots",
+                "Include measurements and condition details",
+                "List during peak hours (Sun-Wed evenings)",
+                "Consider auction format for rare/uncertain value items",
+                f"Sell-through rate: {market_analysis['sell_through_rate']}%"
             ]
+            
+            logger.info(f"Enhanced with eBay data: confidence={market_analysis['confidence']}")
+        else:
+            logger.warning("No suitable keywords found for eBay search")
             
         return item_data
         
@@ -212,6 +207,14 @@ class EnhancedAppItem:
         self.category = data.get("category", "unknown")
         self.ebay_specific_tips = data.get("ebay_specific_tips", [])
         
+        # Extended properties
+        self.brand = data.get("brand", "")
+        self.model = data.get("model", "")
+        self.year = data.get("year", "")
+        self.condition = data.get("condition", "")
+        self.confidence = data.get("confidence", 0.5)
+        self.key_features = data.get("key_features", [])
+        
     def to_dict(self) -> Dict[str, Any]:
         return {
             "title": self.title,
@@ -223,10 +226,15 @@ class EnhancedAppItem:
             "authenticity_checks": self.authenticity_checks,
             "profit_potential": self.profit_potential,
             "category": self.category,
-            "ebay_specific_tips": self.ebay_specific_tips
+            "ebay_specific_tips": self.ebay_specific_tips,
+            "brand": self.brand,
+            "model": self.model,
+            "year": self.year,
+            "condition": self.condition,
+            "confidence": self.confidence,
+            "key_features": self.key_features
         }
 
-# JOB PROCESSING FUNCTIONS
 def parse_json_response(response_text: str) -> List[Dict]:
     """Extract JSON from AI response with robust error handling"""
     try:
@@ -261,11 +269,10 @@ def parse_json_response(response_text: str) -> List[Dict]:
     except Exception as e:
         logger.warning(f"JSON parsing failed: {e}")
         logger.warning(f"Response text that failed: {response_text[:200]}...")
-        # Return empty array instead of failing
         return []
 
 def process_image_standard(job_data: Dict) -> Dict:
-    """Enhanced single-stage processing (25s) with maximum-like quality"""
+    """Enhanced single-stage processing with eBay market integration"""
     try:
         image_base64 = job_data['image_base64']
         mime_type = job_data['mime_type']
@@ -281,7 +288,7 @@ def process_image_standard(job_data: Dict) -> Dict:
         if job_data.get('description'):
             prompt += f"\nUser-provided description: {job_data['description']}"
         
-        logger.info("Starting enhanced 25-second analysis...")
+        logger.info("Starting enhanced market analysis...")
         response = model.generate_content([prompt, image_part])
         logger.info("AI analysis completed, parsing response...")
         
@@ -290,14 +297,12 @@ def process_image_standard(job_data: Dict) -> Dict:
         
         enhanced_items = []
         for item_data in ai_response:
-            # FIX: Check if item_data is actually a dictionary before processing
             if isinstance(item_data, dict):
-                detected_category = detect_category(item_data.get("title", ""), item_data.get("description", ""))
-                item_data["category"] = detected_category.value
+                # Enhance with real eBay market data
                 item_data = enhance_with_ebay_data(item_data)
                 
-                if detected_category in category_prompts:
-                    item_data["market_insights"] += f" {category_prompts[detected_category]}"
+                detected_category = detect_category(item_data.get("title", ""), item_data.get("description", ""))
+                item_data["category"] = detected_category.value
                 
                 enhanced_items.append(EnhancedAppItem(item_data).to_dict())
             else:
@@ -306,11 +311,11 @@ def process_image_standard(job_data: Dict) -> Dict:
         return {
             "status": "completed",
             "result": {
-                "message": "Enhanced 25-second analysis completed",
+                "message": "Enhanced analysis with eBay market data completed",
                 "items": enhanced_items,
                 "processing_time": "25s",
                 "analysis_stages": 1,
-                "confidence_level": "enhanced_standard",
+                "confidence_level": "enhanced_with_market_data",
                 "analysis_timestamp": datetime.now().isoformat()
             }
         }
@@ -319,58 +324,7 @@ def process_image_standard(job_data: Dict) -> Dict:
         logger.error(f"Enhanced processing failed: {e}")
         return {"status": "failed", "error": str(e)}
 
-# EBAY AUTH ENDPOINTS
-@app.get("/auth/ebay")
-async def auth_ebay():
-    auth_url = get_authorization_url()
-    if auth_url:
-        return RedirectResponse(url=auth_url)
-    else:
-        raise HTTPException(status_code=500, detail="Failed to generate auth URL")
-
-@app.get("/auth/callback")
-async def auth_callback(SessID: str, runame: str):
-    try:
-        token = await exchange_session_for_token(SessID)
-        if token:
-            os.environ['EBAY_AUTH_TOKEN'] = token
-            return RedirectResponse(url="/auth/success")
-        else:
-            return RedirectResponse(url="/auth/failed")
-    except Exception as e:
-        logger.error(f"Auth callback error: {e}")
-        return RedirectResponse(url="/auth/failed")
-
-@app.get("/auth/success")
-async def auth_success():
-    return HTMLResponse("""
-    <html><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-        <h1 style="color: green;">✅ Authentication Successful!</h1>
-        <p>You have successfully authenticated with eBay.</p>
-        <p><a href="/" style="color: #007bff; text-decoration: none;">Return to ReReSell App</a></p>
-    </body></html>
-    """)
-
-@app.get("/auth/failed")
-async def auth_failed():
-    return HTMLResponse("""
-    <html><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-        <h1 style="color: red;">❌ Authentication Failed</h1>
-        <p>There was an issue authenticating with eBay.</p>
-        <p><a href="/auth/ebay" style="color: #007bff; text-decoration: none;">Try again</a></p>
-    </body></html>
-    """)
-
-@app.get("/privacy")
-async def privacy_policy():
-    return HTMLResponse("""
-    <html><body style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
-        <h1>Privacy Policy</h1>
-        <p><strong>ReReSell AI eBay Assistant</strong> respects your privacy.</p>
-    </body></html>
-    """)
-
-# MAIN UPLOAD ENDPOINT WITH FREE PLAN OPTIMIZATION
+# MAIN UPLOAD ENDPOINT
 @app.post("/upload_item/")
 async def create_upload_file(
     file: UploadFile = File(...),
@@ -385,7 +339,7 @@ async def create_upload_file(
         
         logger.info(f"Received upload request: {file.filename}, mode: {accuracy_mode}")
         
-        # Process with enhanced standard mode (25-second maximum-like quality)
+        # Process with enhanced market analysis
         result = process_image_standard({
             'image_base64': image_base64,
             'mime_type': file.content_type,
@@ -404,116 +358,65 @@ async def create_upload_file(
         logger.error(f"Processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-# SIMPLIFIED JOB STATUS ENDPOINTS
-@app.get("/job/{job_id}/status")
-async def get_job_status(job_id: str):
-    return {
-        "status": "completed",
-        "message": "Direct processing mode - jobs complete immediately",
-        "job_id": job_id
-    }
-
-@app.get("/job/{job_id}/result")
-async def get_job_result(job_id: str):
-    raise HTTPException(status_code=400, detail="Direct processing mode - use /upload_item directly")
-
-# DEBUG ENDPOINTS
-@app.get("/debug/endpoints")
-async def debug_endpoints():
-    endpoints = []
-    for route in app.routes:
-        if hasattr(route, 'methods'):
-            endpoints.append(f"{list(route.methods)[0]} {route.path}")
-    
-    return {
-        "endpoints": endpoints,
-        "total_endpoints": len(endpoints)
-    }
-
-@app.get("/debug/routes")
-async def debug_routes():
-    routes = []
-    for route in app.routes:
-        routes.append({
-            "path": route.path,
-            "name": getattr(route, 'name', 'unnamed'),
-            "methods": getattr(route, "methods", [])
-        })
-    return {"routes": routes}
-
-# BATCH PROCESSING ENDPOINT
-@app.post("/batch_analyze/")
-async def batch_analyze_items(files: List[UploadFile] = File(...)):
+# eBay API test endpoint
+@app.get("/test_ebay/{keywords}")
+async def test_ebay_search(keywords: str):
     try:
-        results = []
-        for file in files:
-            image_bytes = await file.read()
-            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-            
-            result = process_image_standard({
-                'image_base64': image_base64,
-                'mime_type': file.content_type
-            })
-            
-            if result['status'] == 'completed':
-                results.extend(result['result']['items'])
+        completed_items = ebay_api.search_completed_items(keywords, max_results=10)
+        market_analysis = ebay_api.analyze_market_trends(keywords)
         
         return {
-            "message": f"Processed {len(files)} images",
-            "total_items": len(results),
-            "items": results,
-            "processing_mode": "enhanced_standard",
-            "batch_timestamp": datetime.now().isoformat()
+            "search_query": keywords,
+            "completed_items_found": len(completed_items),
+            "sample_items": completed_items[:3],
+            "market_analysis": market_analysis
         }
     except Exception as e:
-        logger.error(f"Batch analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Batch processing failed: {str(e)}")
+        logger.error(f"eBay test failed: {e}")
+        return {"error": str(e), "status": "failed"}
 
-@app.post("/list_to_ebay/")
-async def list_to_ebay(item_data: Dict):
+# Health check with eBay status
+@app.get("/health")
+async def health_check():
+    ebay_status = "configured"
     try:
-        result = ebay_api.list_item(item_data)
-        return result
+        # Test eBay API with a simple search
+        test_results = ebay_api.search_completed_items("iphone", max_results=1)
+        ebay_status = "working" if test_results else "no_results"
     except Exception as e:
-        logger.error(f"eBay listing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"eBay listing failed: {str(e)}")
-
-@app.get("/ebay_search/{keywords}")
-async def ebay_search(keywords: str, category: Optional[str] = None):
-    try:
-        results = ebay_api.search_completed_items(keywords, category)
-        return {"results": results}
-    except Exception as e:
-        logger.error(f"eBay search failed: {e}")
-        raise HTTPException(status_code=500, detail=f"eBay search failed: {str(e)}")
+        ebay_status = f"error: {str(e)}"
+    
+    return {
+        "status": "healthy",
+        "ai_configured": bool(model),
+        "ebay_status": ebay_status,
+        "model": "gemini-2.5-flash-preview-05-20",
+        "version": "3.1.0",
+        "processing_mode": "enhanced_with_market_data",
+        "features": [
+            "Real eBay market data integration",
+            "Completed listings analysis", 
+            "Profit calculation with fees",
+            "Market trend analysis"
+        ]
+    }
 
 @app.get("/")
 async def root():
     return {
-        "message": "AI Resell Pro API v3.0 - Enhanced 25s Analysis! 🚀",
+        "message": "AI Resell Pro API v3.1 - Now with Real eBay Market Data! 🚀",
         "status": "healthy",
         "features": [
-            "Enhanced 25-second analysis",
-            "Maximum-like accuracy in minimum time",
-            "eBay market integration",
-            "Free plan optimized (no timeout)"
+            "Real eBay completed listings analysis",
+            "Market trend analysis with confidence scoring",
+            "Profit calculations after eBay fees",
+            "Enhanced accuracy mode"
         ],
         "endpoints": {
             "upload": "/upload_item",
-            "health": "/health"
+            "health": "/health",
+            "test_ebay": "/test_ebay/{keywords}"
         }
-    }
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "ai_configured": bool(model),
-        "ebay_configured": hasattr(ebay_api, 'search_completed_items'),
-        "model": "gemini-2.5-flash-preview-05-20",
-        "version": "3.0.0",
-        "processing_mode": "enhanced_standard",
-        "timeout_optimized": True
     }
 
 if __name__ == "__main__":

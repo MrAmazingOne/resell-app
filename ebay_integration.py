@@ -1,236 +1,243 @@
 import os
-from ebaysdk.exception import ConnectionError
-from ebaysdk.finding import Connection as FindingConnection
-from ebaysdk.trading import Connection as TradingConnection
-from ebaysdk.shopping import Connection as ShoppingConnection
-from datetime import datetime, timedelta
+import requests
 import json
 import logging
 from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 class eBayAPI:
     def __init__(self, sandbox=True):
         self.sandbox = sandbox
-        self.config = {
-            'appid': os.getenv('EBAY_APP_ID'),
-            'devid': os.getenv('EBAY_DEV_ID'),
-            'certid': os.getenv('EBAY_CERT_ID'),
-            'token': os.getenv('EBAY_AUTH_TOKEN'),
-            'siteid': '0',  # US site
-            # CRITICAL FIX: Explicitly set config_file to None
-            'config_file': None
-        }
+        self.app_id = os.getenv('EBAY_APP_ID')
+        self.dev_id = os.getenv('EBAY_DEV_ID')  
+        self.cert_id = os.getenv('EBAY_CERT_ID')
+        self.auth_token = os.getenv('EBAY_AUTH_TOKEN')
         
-        if not sandbox:
-            # Production credentials (you'll need to request these)
-            self.config['appid'] = os.getenv('EBAY_PROD_APP_ID')
-            # Add production certid and devid when available
+        # Use Finding API for completed listings (no auth required for basic searches)
+        if sandbox:
+            self.finding_base_url = "https://svcs.sandbox.ebay.com/services/search/FindingService/v1"
+            self.shopping_base_url = "https://open.api.sandbox.ebay.com/shopping"
+        else:
+            self.finding_base_url = "https://svcs.ebay.com/services/search/FindingService/v1"
+            self.shopping_base_url = "https://open.api.ebay.com/shopping"
 
     def search_completed_items(self, keywords: str, category_id: Optional[str] = None, 
-                             max_results: int = 10) -> List[Dict]:
+                             max_results: int = 20) -> List[Dict]:
         """
-        Search for completed items to analyze market prices
+        Search for completed/sold items using eBay Finding API
+        This provides real market data for pricing analysis
         """
         try:
-            # FIXED: Use Shopping API instead of Finding API for completed items
-            # Shopping API doesn't require authentication for public data
-            api = ShoppingConnection(
-                config_file=None,
-                appid=self.config['appid'],
-                siteid='0',
-                domain='open.api.sandbox.ebay.com' if self.sandbox else 'open.api.ebay.com'
-            )
-            
-            # Use GetMultipleItems instead of findCompletedItems
-            # For completed items search, we'll use a different approach
-            # since Shopping API doesn't have direct completed items search
-            
-            # Alternative approach: search for similar items and get their details
-            request_data = {
-                'QueryKeywords': keywords,
-                'MaxEntries': max_results,
-                'IncludeSelector': 'ItemSpecifics,Details,Description'
+            # Use Finding API's findCompletedItems - this works without authentication
+            params = {
+                'OPERATION-NAME': 'findCompletedItems',
+                'SERVICE-VERSION': '1.0.0',
+                'SECURITY-APPNAME': self.app_id,
+                'RESPONSE-DATA-FORMAT': 'JSON',
+                'REST-PAYLOAD': '',
+                'keywords': keywords,
+                'paginationInput.entriesPerPage': min(max_results, 100),
+                'itemFilter(0).name': 'SoldItemsOnly',
+                'itemFilter(0).value': 'true',
+                'itemFilter(1).name': 'ListingType',
+                'itemFilter(1).value': 'FixedPrice',
+                'sortOrder': 'EndTimeSoonest'
             }
             
             if category_id:
-                request_data['CategoryID'] = category_id
-                
-            response = api.execute('FindProducts', request_data)
+                params['categoryId'] = category_id
             
+            response = requests.get(self.finding_base_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Parse the response
             items = []
-            if hasattr(response.reply, 'Product') and response.reply.Product:
-                for product in response.reply.Product:
-                    # Get pricing information from the first item listed
-                    if hasattr(product, 'ItemSpecifics') and hasattr(product.ItemSpecifics, 'NameValueList'):
-                        # Extract key details from item specifics
-                        specifics = {}
-                        for nv in product.ItemSpecifics.NameValueList:
-                            specifics[nv.Name] = nv.Value
-                        
-                        items.append({
-                            'title': product.Title if hasattr(product, 'Title') else 'Unknown',
-                            'price': float(specifics.get('CurrentPrice', '0')) if 'CurrentPrice' in specifics else 0.0,
-                            'condition': specifics.get('Condition', 'Unknown'),
-                            'category_name': product.PrimaryCategoryName if hasattr(product, 'PrimaryCategoryName') else 'Unknown'
-                        })
+            if 'findCompletedItemsResponse' in data:
+                search_result = data['findCompletedItemsResponse'][0]
+                if 'searchResult' in search_result and search_result['searchResult'][0]['@count'] != '0':
+                    for item in search_result['searchResult'][0]['item']:
+                        try:
+                            # Extract price - handle both sold and current price
+                            price_info = item.get('sellingStatus', [{}])[0]
+                            current_price = float(price_info.get('currentPrice', [{}])[0].get('@value', '0'))
+                            
+                            # Get condition
+                            condition_info = item.get('condition', [{}])
+                            condition = condition_info[0].get('conditionDisplayName', ['Used'])[0] if condition_info else 'Used'
+                            
+                            # Get category
+                            category_info = item.get('primaryCategory', [{}])
+                            category_name = category_info[0].get('categoryName', ['Unknown'])[0] if category_info else 'Unknown'
+                            
+                            items.append({
+                                'title': item['title'][0],
+                                'price': current_price,
+                                'condition': condition,
+                                'category_name': category_name,
+                                'item_id': item['itemId'][0],
+                                'end_time': item['listingInfo'][0]['endTime'][0],
+                                'shipping_cost': float(item.get('shippingInfo', [{}])[0].get('shippingServiceCost', [{}])[0].get('@value', '0')),
+                                'gallery_url': item.get('galleryURL', [''])[0]
+                            })
+                        except (KeyError, IndexError, ValueError) as e:
+                            logger.warning(f"Error parsing item: {e}")
+                            continue
             
-            # If no products found, return empty list instead of failing
+            logger.info(f"Found {len(items)} completed items for '{keywords}'")
             return items
             
-        except ConnectionError as e:
-            logger.error(f"eBay API Error: {e}")
-            # Return empty list instead of failing the entire analysis
+        except requests.RequestException as e:
+            logger.error(f"eBay Finding API Error: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error in completed items search: {e}")
             return []
 
-    def get_item_details(self, item_id: str) -> Optional[Dict]:
+    def get_current_listings(self, keywords: str, max_results: int = 10) -> List[Dict]:
         """
-        Get detailed information about a specific item
+        Search current active listings for comparison
         """
         try:
-            api = ShoppingConnection(
-                config_file=None,  # ← Fix here too
-                appid=self.config['appid'],
-                domain='open.api.sandbox.ebay.com' if self.sandbox else 'open.api.ebay.com'
-            )
-            response = api.execute('GetSingleItem', {
-                'ItemID': item_id,
-                'IncludeSelector': 'Details,Description,ShippingCosts'
-            })
-            
-            item = response.reply.Item
-            return {
-                'title': item.Title,
-                'description': item.Description if hasattr(item, 'Description') else '',
-                'price': float(item.ConvertedCurrentPrice.value),
-                'condition': item.ConditionDisplayName,
-                'category': item.PrimaryCategoryName,
-                'seller_feedback': item.Seller.FeedbackScore,
-                'listing_type': item.ListingType,
-                'shipping_cost': float(item.ShippingCostSummary.ShippingServiceCost.value) if hasattr(item, 'ShippingCostSummary') else 0
+            params = {
+                'OPERATION-NAME': 'findItemsByKeywords',
+                'SERVICE-VERSION': '1.0.0',
+                'SECURITY-APPNAME': self.app_id,
+                'RESPONSE-DATA-FORMAT': 'JSON',
+                'REST-PAYLOAD': '',
+                'keywords': keywords,
+                'paginationInput.entriesPerPage': min(max_results, 100),
+                'itemFilter(0).name': 'ListingType',
+                'itemFilter(0).value': 'FixedPrice',
+                'sortOrder': 'BestMatch'
             }
             
-        except ConnectionError as e:
-            logger.error(f"eBay API Error: {e}")
-            return None
+            response = requests.get(self.finding_base_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            items = []
+            if 'findItemsByKeywordsResponse' in data:
+                search_result = data['findItemsByKeywordsResponse'][0]
+                if 'searchResult' in search_result and search_result['searchResult'][0]['@count'] != '0':
+                    for item in search_result['searchResult'][0]['item']:
+                        try:
+                            price_info = item.get('sellingStatus', [{}])[0]
+                            current_price = float(price_info.get('currentPrice', [{}])[0].get('@value', '0'))
+                            
+                            condition_info = item.get('condition', [{}])
+                            condition = condition_info[0].get('conditionDisplayName', ['Used'])[0] if condition_info else 'Used'
+                            
+                            items.append({
+                                'title': item['title'][0],
+                                'price': current_price,
+                                'condition': condition,
+                                'item_id': item['itemId'][0],
+                                'time_left': item['listingInfo'][0]['endTime'][0]
+                            })
+                        except (KeyError, IndexError, ValueError):
+                            continue
+            
+            return items
+            
+        except Exception as e:
+            logger.error(f"Current listings search error: {e}")
+            return []
+
+    def analyze_market_trends(self, keywords: str, category_id: str = None) -> Dict:
+        """
+        Analyze market trends using completed and current listings
+        """
+        try:
+            # Get completed (sold) items for pricing history
+            completed_items = self.search_completed_items(keywords, category_id, max_results=50)
+            current_items = self.get_current_listings(keywords, max_results=20)
+            
+            if not completed_items:
+                return self._generate_estimated_analysis(keywords)
+            
+            # Calculate statistics from completed items
+            sold_prices = [item['price'] for item in completed_items if item['price'] > 0]
+            
+            if not sold_prices:
+                return self._generate_estimated_analysis(keywords)
+            
+            avg_price = sum(sold_prices) / len(sold_prices)
+            min_price = min(sold_prices)
+            max_price = max(sold_prices)
+            
+            # Calculate recommended price (slightly below average for quick sale)
+            recommended_price = avg_price * 0.85
+            
+            # Calculate sell-through rate estimation
+            total_completed = len(completed_items)
+            total_current = len(current_items)
+            estimated_sell_through = (total_completed / (total_completed + total_current)) * 100 if (total_completed + total_current) > 0 else 50
+            
+            return {
+                'average_price': round(avg_price, 2),
+                'price_range': f"${min_price:.2f} - ${max_price:.2f}",
+                'total_listings_analyzed': len(completed_items),
+                'sell_through_rate': round(estimated_sell_through, 1),
+                'recommended_price': round(recommended_price, 2),
+                'market_notes': f'Based on {len(completed_items)} recent sold listings',
+                'data_source': 'eBay completed listings',
+                'confidence': 'high' if len(completed_items) >= 10 else 'medium'
+            }
+            
+        except Exception as e:
+            logger.error(f"Market analysis error: {e}")
+            return self._generate_estimated_analysis(keywords)
+    
+    def _generate_estimated_analysis(self, keywords: str) -> Dict:
+        """
+        Generate estimated analysis when API data is unavailable
+        """
+        return {
+            'average_price': 35.00,
+            'price_range': "$15.00 - $75.00",
+            'total_listings_analyzed': 0,
+            'sell_through_rate': 45.0,
+            'recommended_price': 29.75,
+            'market_notes': f'Estimated data - eBay API returned no results for "{keywords}"',
+            'data_source': 'estimated',
+            'confidence': 'low'
+        }
 
     def get_category_suggestions(self, query: str) -> List[Dict]:
         """
-        Get eBay category suggestions for an item
+        Get category suggestions using eBay Shopping API (no auth required)
         """
         try:
-            api = TradingConnection(
-                config_file=None,  # ← Fix here too
-                appid=self.config['appid'],
-                certid=self.config['certid'], 
-                devid=self.config['devid'],
-                token=self.config['token'],
-                domain='api.sandbox.ebay.com' if self.sandbox else 'api.ebay.com',
-                warnings=True
-            )
-            response = api.execute('GetCategorySuggestions', {
-                'Query': query
-            })
+            # Use a simpler approach - search for items and extract their categories
+            current_items = self.get_current_listings(query, max_results=20)
             
+            categories = {}
+            for item in current_items:
+                cat_name = item.get('category_name', 'Other')
+                if cat_name in categories:
+                    categories[cat_name] += 1
+                else:
+                    categories[cat_name] = 1
+            
+            # Return top categories sorted by frequency
             suggestions = []
-            if hasattr(response.reply, 'CategoryArray'):
-                for category in response.reply.CategoryArray.Category:
-                    suggestions.append({
-                        'category_id': category.CategoryID,
-                        'category_name': category.CategoryName,
-                        'category_path': category.CategoryParentName if hasattr(category, 'CategoryParentName') else '',
-                        'relevance': category.Relevance if hasattr(category, 'Relevance') else ''
-                    })
+            for cat_name, count in sorted(categories.items(), key=lambda x: x[1], reverse=True)[:5]:
+                suggestions.append({
+                    'category_name': cat_name,
+                    'relevance': count,
+                    'category_id': '267'  # Default to collectibles
+                })
             
             return suggestions
             
-        except ConnectionError as e:
-            logger.error(f"eBay API Error: {e}")
-            return []
-
-    def analyze_market_trends(self, category_id: str, keywords: str = "") -> Dict:
-        """
-        Analyze market trends for a specific category
-        """
-        # For now, return mock data since completed items search is complex
-        # without proper Finding API access
-        return {
-            'average_price': 45.99,
-            'price_range': "$25.00 - $89.99",
-            'total_listings_analyzed': 42,
-            'sell_through_rate': 65.2,
-            'recommended_price': 41.39,
-            'market_notes': 'Using estimated market data (eBay API authentication required for live data)'
-        }
-
-    def list_item(self, item_data: Dict) -> Dict:
-        """
-        List an item on eBay
-        """
-        try:
-            api = TradingConnection(
-                config_file=None,  # ← Fix here too
-                appid=self.config['appid'],
-                certid=self.config['certid'], 
-                devid=self.config['devid'],
-                token=self.config['token'],
-                domain='api.sandbox.ebay.com' if self.sandbox else 'api.ebay.com',
-                warnings=True
-            )
-            
-            # Build eBay listing request
-            request = {
-                'Item': {
-                    'Title': item_data['title'],
-                    'Description': item_data['description'],
-                    'PrimaryCategory': {
-                        'CategoryID': item_data.get('category_id', '267')  # Default: Collectibles
-                    },
-                    'StartPrice': item_data['price'],
-                    'ConditionID': '3000',  # Used
-                    'Country': 'US',
-                    'Currency': 'USD',
-                    'DispatchTimeMax': '3',
-                    'ListingDuration': 'Days_7',
-                    'ListingType': 'FixedPriceItem',
-                    'PaymentMethods': 'PayPal',
-                    'PayPalEmailAddress': 'your-paypal@email.com',
-                    'PictureDetails': {
-                        'PictureURL': item_data.get('image_url', '')
-                    },
-                    'PostalCode': '90210',
-                    'Quantity': '1',
-                    'ReturnPolicy': {
-                        'ReturnsAcceptedOption': 'ReturnsAccepted',
-                        'RefundOption': 'MoneyBack',
-                        'ReturnsWithinOption': 'Days_30',
-                        'ShippingCostPaidByOption': 'Buyer'
-                    },
-                    'ShippingDetails': {
-                        'ShippingType': 'Flat',
-                        'ShippingServiceOptions': {
-                            'ShippingServicePriority': '1',
-                            'ShippingService': 'USPSPriority',
-                            'ShippingServiceCost': '10.0'
-                        }
-                    },
-                    'Site': 'US'
-                }
-            }
-            
-            response = api.execute('AddItem', request)
-            
-            return {
-                'success': True,
-                'item_id': response.reply.ItemID,
-                'listing_url': f"https://www.ebay.com/itm/{response.reply.ItemID}",
-                'fees': response.reply.FeeSummary
-            }
-            
-        except ConnectionError as e:
-            logger.error(f"eBay listing error: {e}")
-            return {'success': False, 'error': str(e)}
+        except Exception as e:
+            logger.error(f"Category suggestions error: {e}")
+            return [{'category_name': 'Collectibles', 'relevance': 1, 'category_id': '267'}]
 
 # Singleton instance
 ebay_api = eBayAPI(sandbox=True)
