@@ -247,10 +247,20 @@ def parse_json_response(response_text: str) -> List[Dict]:
         if json_match:
             json_text = json_match.group(0)
         
-        return json.loads(json_text)
+        parsed_data = json.loads(json_text)
         
+        # Ensure we always return a list of dictionaries
+        if isinstance(parsed_data, dict):
+            return [parsed_data]
+        elif isinstance(parsed_data, list):
+            return parsed_data
+        else:
+            logger.warning(f"Unexpected JSON format: {type(parsed_data)}")
+            return []
+            
     except Exception as e:
         logger.warning(f"JSON parsing failed: {e}")
+        logger.warning(f"Response text that failed: {response_text[:200]}...")
         # Return empty array instead of failing
         return []
 
@@ -280,14 +290,18 @@ def process_image_standard(job_data: Dict) -> Dict:
         
         enhanced_items = []
         for item_data in ai_response:
-            detected_category = detect_category(item_data.get("title", ""), item_data.get("description", ""))
-            item_data["category"] = detected_category.value
-            item_data = enhance_with_ebay_data(item_data)
-            
-            if detected_category in category_prompts:
-                item_data["market_insights"] += f" {category_prompts[detected_category]}"
-            
-            enhanced_items.append(EnhancedAppItem(item_data).to_dict())
+            # FIX: Check if item_data is actually a dictionary before processing
+            if isinstance(item_data, dict):
+                detected_category = detect_category(item_data.get("title", ""), item_data.get("description", ""))
+                item_data["category"] = detected_category.value
+                item_data = enhance_with_ebay_data(item_data)
+                
+                if detected_category in category_prompts:
+                    item_data["market_insights"] += f" {category_prompts[detected_category]}"
+                
+                enhanced_items.append(EnhancedAppItem(item_data).to_dict())
+            else:
+                logger.warning(f"Skipping non-dictionary item: {item_data}")
         
         return {
             "status": "completed",
