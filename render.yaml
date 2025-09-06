@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: resell-pro-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: GOOGLE_API_KEY
+        value: ${GOOGLE_API_KEY}
+      - key: EBAY_APP_ID
+        value: ${EBAY_APP_ID}
+      - key: EBAY_CERT_ID
+        value: ${EBAY_CERT_ID}
+      - key: EBAY_DEV_ID
+        value: ${EBAY_DEV_ID}
+      - key: EBAY_RU_NAME
+        value: ${EBAY_RU_NAME}
+      - key: EBAY_AUTH_TOKEN
+        value: ${EBAY_AUTH_TOKEN}
+      - key: REDIS_URL
+        value: ${REDIS_URL}
+
+  - type: worker
+    name: resell-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: rq worker --url $REDIS_URL
+    envVars:
+      - key: REDIS_URL
+        value: ${REDIS_URL}
+      - key: GOOGLE_API_KEY
+        value: ${GOOGLE_API_KEY}
+      - key: EBAY_APP_ID
+        value: ${EBAY_APP_ID}
+      - key: EBAY_CERT_ID
+        value: ${EBAY_CERT_ID}
+      - key: EBAY_DEV_ID
+        value: ${EBAY_DEV_ID}
