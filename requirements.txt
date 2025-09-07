@@ -10,3 +10,5 @@ python-multipart>=0.0.6
 async-timeout>=4.0.0
 redis>=4.5.0
 rq>=1.15.0
+gitpython>=3.1.40
+asyncio-subprocess>=0.1.0

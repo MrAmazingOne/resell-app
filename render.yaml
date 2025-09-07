@@ -8,6 +8,8 @@ services:
     envVars:
       - key: GOOGLE_API_KEY
         value: ${GOOGLE_API_KEY}
+      - key: DEEPSEEK_API_KEY
+        value: ${DEEPSEEK_API_KEY}
       - key: EBAY_APP_ID
         value: ${EBAY_APP_ID}
       - key: EBAY_CERT_ID
@@ -32,6 +34,8 @@ services:
         value: ${REDIS_URL}
       - key: GOOGLE_API_KEY
         value: ${GOOGLE_API_KEY}
+      - key: DEEPSEEK_API_KEY
+        value: ${DEEPSEEK_API_KEY}
       - key: EBAY_APP_ID
         value: ${EBAY_APP_ID}
       - key: EBAY_CERT_ID
