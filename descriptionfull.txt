@@ -1,0 +1,280 @@
+roject Overview: AI-Powered Resale Valuation & Listing App
+
+This project is an iOS application that enables users to identify physical items, evaluate their real-time market value and resale potential, and list them for sale—directly from one or more photos.
+
+The app serves as a high-confidence resale engine, using computer vision, AI agents, and live market data to remove guesswork and maximize profit in resale, collectibles, antiques, and arbitrage markets.
+
+Core User Experience (End-to-End Flow)
+1. Image Capture & Selection
+
+Users can provide images in multiple ways:
+
+Take a photo in-app
+
+Select one or more photos from the photo library
+
+Select multiple images of the same item to improve identification accuracy
+
+Enable “Multi-Item Mode” to:
+
+Extract multiple distinct items from a single image, or
+
+Process multiple items across multiple images
+
+The app uses iOS “Lift Subject from Image” to isolate individual objects for focused analysis.
+
+The system does not require a single image — more images increase identification confidence and valuation accuracy.
+
+2. Optional User Input
+
+Users may optionally add:
+
+Title hints
+
+Short descriptions
+
+Condition notes
+
+This information assists the AI agent in refining search accuracy but is never required.
+
+Vision + AI Two-Stage Identification System
+Stage 1: iOS Vision Framework (Pre-Processing)
+
+Performs on-device object detection and categorization
+
+Extracts visual features and bounding regions
+
+Supports subject isolation and multi-item extraction
+
+Reduces backend processing time
+
+Prevents render request timeouts (30s execution / 50s spin-down)
+
+Stage 2: Backend AI Agent
+
+The AI agent receives:
+
+One or more cropped images per item
+
+Vision framework metadata
+
+Optional user-provided text
+
+It performs:
+
+Item identification (brand, model, year, category)
+
+Market matching
+
+Valuation analysis
+
+Resale potential evaluation
+
+Backend Processing & Market Intelligence
+
+The backend asynchronously:
+
+Queries eBay API for:
+
+Recent sold listings
+
+Active listings
+
+Price distributions
+
+Market liquidity
+
+Calculates:
+
+Average sale price
+
+Lowest and highest historical prices
+
+Estimated resale price
+
+Cost vs. profit opportunity
+
+Demand and trend signals
+
+The frontend polls for completion to avoid timeout failures.
+
+Results Display (Frontend)
+
+Each identified item is presented in a collapsible horizontal card, containing:
+
+Item image
+
+Item name / identification
+
+Market value snapshot
+
+Average lowest price (USD)
+
+Average highest price (USD)
+
+Estimated resale value (USD)
+
+Resell score (overall profit viability gauge)
+
+Rarity / collectibility indicators
+
+Condition impact notes
+
+Trend indicators
+
+Listing status
+
+Important Economic Transparency
+
+All valuation data—including lowest comps and downside pricing—is fully visible to the user.
+
+Sensitive pricing data is only suppressed at the moment of listing, so buyers are not influenced by information that could undermine the sale.
+
+This ensures:
+
+Maximum user intelligence
+
+Maximum listing effectiveness
+
+Resell Score Logic
+
+The Resell Score is an aggregate signal that accounts for:
+
+Cost vs. estimated resale value
+
+Price volatility
+
+Market liquidity
+
+Demand trends
+
+Historical sales velocity
+
+It does not override raw numbers—users always retain full control over economic decisions.
+
+Listing & Inventory Management
+Instant eBay Listing
+
+Users may immediately list an item on eBay with one tap.
+
+When listing:
+
+Buyer-facing descriptions exclude sensitive economic data
+
+Listing includes:
+
+Optimized title
+
+High-conversion description
+
+Pricing strategy
+
+Category and keywords
+
+eBay is the initial integration; additional marketplaces (Craigslist, Facebook Marketplace, etc.) will follow.
+
+Saved Inventory System
+
+Users can save items for later listing.
+
+Saved items appear as:
+
+Collapsible horizontal cards
+
+Automatically tracked listing status
+
+Visual indicators:
+
+🟢 Listed
+
+🔴 Not listed
+
+Listed items are automatically saved and updated.
+
+AI Agent Architecture
+Primary AI Agent (Always Active)
+
+Responsibilities:
+
+Item identification
+
+Market valuation
+
+Resale potential assessment
+
+Economic confidence scoring
+
+The primary agent always evaluates resale potential, as not all identifiable items are economically viable for resale.
+
+Optional Secondary AI Agent (Context-Driven)
+
+Triggered when beneficial.
+
+Responsibilities:
+
+Trend analysis
+
+Cultural relevance
+
+Media influence
+
+Collectibility momentum
+
+Resale potential analysis by the secondary agent is derived from trend and cultural signals, not duplicated logic.
+
+Technical Architecture (High Level)
+Frontend (iOS)
+
+Camera & photo library
+
+iOS Vision + Lift Subject
+
+Multi-image and multi-item workflows
+
+Async backend polling
+
+Profit-focused UI/UX
+
+Backend
+
+Vision-augmented AI pipeline
+
+eBay API integration
+
+Market aggregation and scoring
+
+Async job execution
+
+Timeout-safe architecture
+
+Business Goal & Competitive Advantage
+
+The goal is to create an exceptionally profitable resale platform by giving users maximum certainty of an item’s real value in today’s market.
+
+Competitive Advantages
+
+Multi-image accuracy
+
+Real-time market intelligence
+
+Transparent economics
+
+Zero-guess resale decisions
+
+Designed for:
+
+Thrifting
+
+Estate sales
+
+Flea markets
+
+Antiques
+
+Collectibles
+
+Investment arbitrage
+
+One-Sentence Pitch
+
+“Take a picture of anything, know exactly what it’s worth today, and list it for sale in seconds.”

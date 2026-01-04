@@ -1,3 +1,10 @@
+# JOB QUEUE + POLLING SYSTEM
+# This API is designed for Render's 30s timeout limit.
+# /upload_item/ queues jobs and returns a job_id immediately.
+# Clients must poll /job/{job_id}/status for results.
+# The background worker processes jobs asynchronously and updates job status/results.
+# Thread safety is ensured with job_lock. See endpoint docstrings for details.
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -516,7 +523,7 @@ async def health_check():
         "processing_mode": "enhanced_with_market_data",
         "features": [
             "Real eBay market data integration",
-            "Completed listings analysis", 
+            "Completed listings analysis",
             "Profit calculation with fees",
             "Market trend analysis"
         ]
