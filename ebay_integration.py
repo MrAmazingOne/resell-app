@@ -15,7 +15,6 @@ class eBayAPI:
         self.cert_id = os.getenv('EBAY_CERT_ID')
         self.auth_token = os.getenv('EBAY_AUTH_TOKEN')
         
-        # Use Finding API for completed listings (no auth required for basic searches)
         if sandbox:
             self.finding_base_url = "https://svcs.sandbox.ebay.com/services/search/FindingService/v1"
             self.shopping_base_url = "https://open.api.sandbox.ebay.com/shopping"
@@ -23,14 +22,96 @@ class eBayAPI:
             self.finding_base_url = "https://svcs.ebay.com/services/search/FindingService/v1"
             self.shopping_base_url = "https://open.api.ebay.com/shopping"
 
+    def optimize_search_keywords(self, keywords: str) -> str:
+        """Optimize search keywords for eBay"""
+        if not keywords:
+            return ""
+        
+        # Common eBay search patterns to improve
+        optimizations = {
+            'not specified': '',
+            'unknown': '',
+            'model number': '',
+            'comfortable playing experience': '',
+            'glossy black finish': '',
+            'exterior finish': '',
+            'restored interior': '',
+            'teal blue': 'teal',
+            'black finish': '',
+            'white finish': '',
+            'blue exterior': '',
+            'red exterior': '',
+            'green exterior': '',
+            '  ': ' '
+        }
+        
+        # Apply optimizations
+        for old, new in optimizations.items():
+            keywords = keywords.replace(old, new)
+        
+        # Remove extra words and keep concise
+        words = keywords.split()
+        important_words = []
+        
+        for word in words:
+            # Clean the word
+            word_clean = word.strip('.,!?;:"\'()[]{}<>')
+            word_lower = word_clean.lower()
+            
+            # Keep brand names (capitalized), years, numbers, key product terms
+            if (word_clean[0].isupper() or  # Brands
+                word_clean.isdigit() and len(word_clean) in [2, 4] or  # Years, model numbers
+                word_lower in ['piano', 'guitar', 'violin', 'drum', 'trumpet', 'saxophone',
+                              'truck', 'car', 'pickup', 'vehicle', 'motorcycle', 'bicycle',
+                              'watch', 'ring', 'necklace', 'bracelet', 'earring',
+                              'painting', 'sculpture', 'statue', 'figure', 'doll',
+                              'book', 'comic', 'coin', 'stamp', 'card', 'poster',
+                              'chair', 'table', 'desk', 'sofa', 'couch', 'bed',
+                              'phone', 'laptop', 'computer', 'camera', 'headphones']):
+                important_words.append(word_clean)
+        
+        # If we filtered too much, keep original (but cleaned)
+        if len(important_words) < 2:
+            important_words = [w.strip('.,!?;:"\'()[]{}<>') for w in words[:6]]
+        
+        # Join back
+        optimized = ' '.join(important_words).strip()
+        
+        # Ensure we have something
+        if not optimized:
+            # Extract any brand or product type from original
+            for word in words:
+                word_clean = word.strip('.,!?;:"\'()[]{}<>')
+                if word_clean[0].isupper() or word_clean.lower() in ['piano', 'guitar', 'truck', 'car']:
+                    optimized = word_clean
+                    break
+            
+            if not optimized and words:
+                optimized = words[0].strip('.,!?;:"\'()[]{}<>')
+        
+        # Remove any remaining generic words
+        final_words = []
+        for word in optimized.split():
+            if word.lower() not in ['and', 'the', 'with', 'for', 'in', 'on', 'at', 'to']:
+                final_words.append(word)
+        
+        final_query = ' '.join(final_words)
+        return final_query[:80]  # eBay has keyword length limits
+
     def search_completed_items(self, keywords: str, category_id: Optional[str] = None, 
                              max_results: int = 20) -> List[Dict]:
         """
         Search for completed/sold items using eBay Finding API
-        This provides real market data for pricing analysis
         """
         try:
-            # Use Finding API's findCompletedItems - this works without authentication
+            # Clean and optimize keywords
+            keywords = self.optimize_search_keywords(keywords)
+            
+            if not keywords:
+                logger.warning("No valid keywords after optimization")
+                return []
+            
+            # Use Finding API's findCompletedItems
             params = {
                 'OPERATION-NAME': 'findCompletedItems',
                 'SERVICE-VERSION': '1.0.0',
@@ -61,7 +142,7 @@ class eBayAPI:
                 if 'searchResult' in search_result and search_result['searchResult'][0]['@count'] != '0':
                     for item in search_result['searchResult'][0]['item']:
                         try:
-                            # Extract price - handle both sold and current price
+                            # Extract price
                             price_info = item.get('sellingStatus', [{}])[0]
                             current_price = float(price_info.get('currentPrice', [{}])[0].get('@value', '0'))
                             
@@ -102,6 +183,12 @@ class eBayAPI:
         Search current active listings for comparison
         """
         try:
+            # Clean and optimize keywords
+            keywords = self.optimize_search_keywords(keywords)
+            
+            if not keywords:
+                return []
+            
             params = {
                 'OPERATION-NAME': 'findItemsByKeywords',
                 'SERVICE-VERSION': '1.0.0',
@@ -170,7 +257,7 @@ class eBayAPI:
             min_price = min(sold_prices)
             max_price = max(sold_prices)
             
-            # Calculate recommended price (slightly below average for quick sale)
+            # Calculate recommended price
             recommended_price = avg_price * 0.85
             
             # Calculate sell-through rate estimation
@@ -210,10 +297,9 @@ class eBayAPI:
 
     def get_category_suggestions(self, query: str) -> List[Dict]:
         """
-        Get category suggestions using eBay Shopping API (no auth required)
+        Get category suggestions using eBay Shopping API
         """
         try:
-            # Use a simpler approach - search for items and extract their categories
             current_items = self.get_current_listings(query, max_results=20)
             
             categories = {}
@@ -224,13 +310,12 @@ class eBayAPI:
                 else:
                     categories[cat_name] = 1
             
-            # Return top categories sorted by frequency
             suggestions = []
             for cat_name, count in sorted(categories.items(), key=lambda x: x[1], reverse=True)[:5]:
                 suggestions.append({
                     'category_name': cat_name,
                     'relevance': count,
-                    'category_id': '267'  # Default to collectibles
+                    'category_id': '267'
                 })
             
             return suggestions

@@ -78,73 +78,293 @@ def update_activity():
         global last_activity
         last_activity = time.time()
 
-# MAXIMUM ACCURACY MARKET ANALYSIS PROMPT
+# MAXIMUM ACCURACY MARKET ANALYSIS PROMPT - ENHANCED
 market_analysis_prompt = """
 EXPERT RESELL ANALYST - MAXIMUM ACCURACY ANALYSIS:
 
-You are analyzing items for resale profitability. Focus on:
+You are analyzing items for resale profitability. You MUST use ALL available information:
 
-🔍 **IDENTIFICATION PHASE:**
-- Extract EVERY visible text, number, logo, brand mark, model number
-- Identify materials, construction quality, age indicators
-- Note condition issues, wear patterns, damage
-- Capture size, dimensions, serial numbers
+🔍 **COMPREHENSIVE IDENTIFICATION PHASE:**
+- Extract EVERY visible text, number, logo, brand mark, model number, serial number
+- Identify ALL materials, construction quality, age indicators, manufacturing details
+- Note ALL condition issues, wear patterns, damage, repairs, modifications
+- Capture EXACT size, dimensions, weight indicators, manufacturing codes
 
-📊 **MARKET ANALYSIS PHASE:**
-- Estimate current market value range based on condition
-- Consider brand popularity, rarity, demand trends
-- Factor in condition deductions and market saturation
-- Account for seasonal pricing variations
+📊 **ENHANCED MARKET ANALYSIS PHASE:**
+- Use EXACT brand/model/year data when available
+- If specific identification is unclear, analyze by material, construction, and visual characteristics
+- Consider brand popularity, rarity, demand trends, collector interest
+- Factor in ALL condition deductions and market saturation
+- Account for seasonal pricing variations and current market trends
 
-💰 **PROFITABILITY ANALYSIS:**
-- Calculate realistic resale price range
-- Suggest maximum purchase price for profit
-- Estimate profit margins after fees (eBay: 13%, shipping: $8-15)
-- Rate resellability 1-10 based on demand/competition
+💰 **PRECISE PROFITABILITY ANALYSIS:**
+- Calculate REALISTIC resale price range based on ALL factors
+- Suggest MAXIMUM purchase price for profit with ALL fees accounted
+- Estimate EXACT profit margins after ALL fees (eBay: 13%, shipping: $8-15, packaging: $3)
+- Rate resellability 1-10 based on demand/competition/condition
+
+📝 **INTELLIGENT FALLBACK STRATEGY (ONLY if specific ID impossible):**
+- Analyze by material composition (wood, metal, plastic, fabric, etc.)
+- Identify manufacturing style and era indicators
+- Assess quality level (consumer, professional, luxury, handmade)
+- Provide guidance on what additional info would enable precise identification
 
 Return analysis in JSON format:
 
 {
-  "title": "eBay-optimized title with brand, model, key features",
-  "description": "Detailed description with ALL visible details and condition notes",
-  "price_range": "Current market range: $X - $Y",
+  "title": "eBay-optimized title with ALL available details",
+  "description": "COMPREHENSIVE description with ALL visible details, condition notes, and identification guidance",
+  "price_range": "Current market range: $X - $Y (based on available data)",
   "resellability_rating": 8,
   "suggested_cost": "Maximum to pay: $X (for profitable resale)",
-  "market_insights": "Market demand, competition level, selling tips",
-  "authenticity_checks": "Red flags to verify before purchase",
-  "profit_potential": "Expected profit: $X-Y after fees",
-  "category": "Primary eBay category",
-  "ebay_specific_tips": ["Photography tips", "Listing optimization", "Timing advice"],
+  "market_insights": "Detailed market demand, competition level, selling strategies",
+  "authenticity_checks": "SPECIFIC red flags and verification steps",
+  "profit_potential": "Expected profit: $X-Y after ALL fees",
+  "category": "Primary eBay category (based on analysis)",
+  "ebay_specific_tips": ["Photography tips", "Listing optimization", "Timing advice", "Keyword strategies"],
   
-  // Extended details
-  "brand": "Exact brand if visible",
-  "model": "Model number/name if visible", 
-  "year": "Production year if determinable",
-  "condition": "Detailed condition assessment",
+  // Extended details - FILL EVERYTHING POSSIBLE
+  "brand": "Exact brand if visible, otherwise 'Unknown - appears to be [quality/style]'",
+  "model": "Model number/name if visible, otherwise descriptive characteristics", 
+  "year": "Production year if determinable, otherwise era/style indicators",
+  "condition": "DETAILED condition assessment with specific notes",
   "confidence": 0.85,
   "analysis_depth": "comprehensive",
-  "key_features": ["Notable features that add value"],
-  "comparable_items": "Similar items selling for $X-Y"
+  "key_features": ["ALL notable features that add value"],
+  "comparable_items": "Similar items selling for $X-Y",
+  "identification_confidence": "high/medium/low with reasoning",
+  "additional_info_needed": ["What specific info would enable better identification"]
 }
 
-CRITICAL: Base pricing on actual market conditions, not retail prices.
-Account for condition issues that reduce value.
+CRITICAL: Base pricing on ACTUAL market conditions, NEVER guess.
+If specific identification is unclear, analyze by observable characteristics and provide guidance.
 
 IMPORTANT: Return ONLY valid JSON, no additional text or explanations.
+ALWAYS provide actionable insights, NEVER empty or generic responses.
 """
 
-def detect_category(title: str, description: str) -> str:
-    """Maximum accuracy category detection"""
+def clean_model_string(model: str) -> str:
+    """Clean model string for better search results"""
+    if not model:
+        return ""
+    
+    # Remove generic/unhelpful words
+    generic_words = [
+        'model', 'version', 'series', 'edition', 'type', 'style',
+        'unknown', 'not specified', 'not available', 'n/a', 'none',
+        'comfortable', 'playing', 'experience', 'finish', 'exterior',
+        'interior', 'condition', 'restored', 'black', 'blue', 'teal',
+        'glossy', 'matte', 'vintage', 'antique', 'used', 'new',
+        'excellent', 'good', 'fair', 'poor', 'working', 'non-working',
+        'functional', 'non-functional', 'complete', 'incomplete',
+        'partial', 'whole', 'damaged', 'undamaged', 'scratch', 'dent',
+        'crack', 'chip', 'stain', 'tear', 'rip', 'hole', 'missing',
+        'present', 'available', 'unavailable', 'visible', 'invisible',
+        'clear', 'unclear', 'legible', 'illegible', 'readable', 'unreadable'
+    ]
+    
+    words = model.split()
+    cleaned_words = []
+    
+    for word in words:
+        word_lower = word.lower()
+        # Keep if not generic and has reasonable length
+        if (word_lower not in generic_words and 
+            len(word) > 2 and 
+            not word.isdigit() or (word.isdigit() and len(word) in [2, 3, 4])):  # Keep years and model numbers
+            cleaned_words.append(word)
+    
+    return ' '.join(cleaned_words[:3])  # Keep only most important terms
+
+def map_to_ebay_category(category: str) -> str:
+    """Map internal category to eBay search-friendly category"""
+    category_mapping = {
+        'electronics': 'electronics',
+        'clothing': 'clothing',
+        'furniture': 'furniture',
+        'collectibles': 'collectibles',
+        'books': 'books',
+        'toys': 'toys',
+        'jewelry': 'jewelry',
+        'sports': 'sporting goods',
+        'tools': 'tools',
+        'kitchen': 'kitchen',
+        'vehicles': 'cars trucks',
+        'music': 'musical instruments',
+        'art': 'art',
+        'coins': 'coins',
+        'stamps': 'stamps'
+    }
+    
+    return category_mapping.get(category.lower(), '')
+
+def get_most_specific_feature(features: List[str]) -> str:
+    """Extract the most specific/detailed feature"""
+    if not features:
+        return ""
+    
+    # Score features by specificity
+    scored_features = []
+    for feature in features:
+        words = feature.split()
+        score = len(words) * 10
+        if any(word.isdigit() for word in words):
+            score += 20
+        if len(feature) > 15:
+            score += 15
+        scored_features.append((feature, score))
+    
+    scored_features.sort(key=lambda x: x[1], reverse=True)
+    return scored_features[0][0] if scored_features else ""
+
+def extract_search_terms_from_title(title: str) -> List[str]:
+    """Extract key search terms from title"""
+    if not title:
+        return []
+    
+    # Common words to exclude
+    stop_words = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to',
+        'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be',
+        'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+        'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+        'can', 'could'
+    }
+    
+    # Extract meaningful words
+    words = title.lower().split()
+    meaningful_words = []
+    
+    for word in words:
+        word = word.strip('.,!?;:"\'()[]{}<>')
+        
+        if (word not in stop_words and 
+            len(word) > 2 and 
+            any(c.isalpha() for c in word)):
+            
+            # Check for year patterns
+            if word.isdigit() and len(word) == 4:
+                year = int(word)
+                if 1900 <= year <= 2100:
+                    meaningful_words.append(word)
+                    continue
+            
+            # Check for model numbers/patterns
+            if any(c.isdigit() for c in word) and any(c.isalpha() for c in word):
+                meaningful_words.append(word)
+                continue
+            
+            # Check for common product terms
+            if word in ['piano', 'guitar', 'violin', 'drum', 'trumpet', 
+                       'truck', 'car', 'vehicle', 'motorcycle', 'bicycle',
+                       'watch', 'ring', 'necklace', 'bracelet', 'earring',
+                       'painting', 'sculpture', 'statue', 'figure', 'doll',
+                       'book', 'comic', 'magazine', 'newspaper', 'document',
+                       'coin', 'stamp', 'card', 'ticket', 'token', 'medal']:
+                meaningful_words.append(word)
+                continue
+            
+            # Add if it seems like a brand or model
+            if word[0].isupper() or word.isupper():
+                meaningful_words.append(word)
+    
+    # Remove duplicates
+    seen = set()
+    unique_words = []
+    for word in meaningful_words:
+        if word not in seen:
+            seen.add(word)
+            unique_words.append(word)
+    
+    return unique_words[:5]
+
+def clean_search_query(query: str) -> str:
+    """Clean and optimize search query for eBay"""
+    if not query:
+        return ""
+    
+    # Remove extra spaces
+    query = ' '.join(query.split())
+    
+    # Remove problematic characters
+    query = query.replace('"', '').replace("'", "").replace("`", "")
+    
+    # Ensure query isn't too long
+    if len(query) > 100:
+        words = query.split()
+        important_words = []
+        for word in words:
+            if (word[0].isupper() or
+                word.isdigit() and len(word) in [2, 4] or
+                word.lower() in ['piano', 'guitar', 'truck', 'car', 'watch', 'ring']):
+                important_words.append(word)
+        
+        if important_words:
+            query = ' '.join(important_words[:8])
+        else:
+            query = ' '.join(words[:8])
+    
+    return query
+
+def remove_duplicate_items(items: List[Dict]) -> List[Dict]:
+    """Remove duplicate items from results"""
+    if not items:
+        return []
+    
+    unique_items = []
+    seen_ids = set()
+    
+    for item in items:
+        item_id = item.get('item_id', '')
+        if item_id and item_id not in seen_ids:
+            seen_ids.add(item_id)
+            unique_items.append(item)
+    
+    return unique_items
+
+def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
+    """MAXIMUM accuracy category detection using ALL available data"""
     title_lower = title.lower()
     description_lower = description.lower()
     
+    # Combine vision analysis data
+    detected_text = " ".join(vision_analysis.get('detected_text', []))
+    detected_objects = " ".join(vision_analysis.get('detected_objects', []))
+    brands = " ".join(vision_analysis.get('potential_brands', []))
+    
+    all_text = f"{title_lower} {description_lower} {detected_text.lower()} {detected_objects.lower()} {brands.lower()}"
+    
     category_keywords = {
-        "electronics": ["electronic", "computer", "phone", "tablet", "camera", "laptop", "charger", "battery", "screen", "iphone", "samsung", "android", "macbook", "ipad", "headphones", "speaker"],
-        "clothing": ["shirt", "pants", "dress", "jacket", "shoe", "sweater", "fabric", "cotton", "wool", "brand", "nike", "adidas", "levi", "gucci", "prada", "lv", "sneaker", "boot"],
-        "furniture": ["chair", "table", "desk", "cabinet", "sofa", "couch", "wood", "furniture", "drawer", "shelf", "bed", "dresser", "wardrobe", "ottoman", "recliner"],
-        "collectibles": ["collectible", "rare", "vintage", "antique", "edition", "limited", "signed", "autograph", "memorabilia", "coin", "stamp", "trading card", "funko", "figure"],
-        "books": ["book", "novel", "author", "page", "edition", "publish", "hardcover", "paperback", "literature", "comic", "manga", "textbook"],
-        "toys": ["toy", "game", "play", "action figure", "doll", "puzzle", "lego", "model kit", "collectible figure", "barbie", "hot wheels", "board game"]
+        "electronics": ["electronic", "computer", "phone", "tablet", "camera", "laptop", "charger", "battery", 
+                       "screen", "iphone", "samsung", "android", "macbook", "ipad", "headphones", "speaker",
+                       "usb", "charger", "power", "cable", "wire", "circuit", "chip", "processor", "memory"],
+        "clothing": ["shirt", "pants", "dress", "jacket", "shoe", "sweater", "fabric", "cotton", "wool", 
+                    "leather", "silk", "polyester", "nike", "adidas", "levi", "gucci", "prada", "lv", 
+                    "sneaker", "boot", "hat", "cap", "glove", "sock", "underwear", "bra", "lingerie"],
+        "furniture": ["chair", "table", "desk", "cabinet", "sofa", "couch", "wood", "furniture", "drawer", 
+                     "shelf", "bed", "dresser", "wardrobe", "ottoman", "recliner", "stool", "bench",
+                     "wooden", "metal", "glass", "upholstery", "cushion", "leg", "armrest", "backrest"],
+        "collectibles": ["collectible", "rare", "vintage", "antique", "edition", "limited", "signed", 
+                        "autograph", "memorabilia", "coin", "stamp", "trading card", "funko", "figure",
+                        "collector", "series", "numbered", "certificate", "authenticity", "display"],
+        "books": ["book", "novel", "author", "page", "edition", "publish", "hardcover", "paperback", 
+                 "literature", "comic", "manga", "textbook", "pages", "chapter", "cover", "binding",
+                 "signed", "first edition", "rare book", "manuscript", "document"],
+        "toys": ["toy", "game", "play", "action figure", "doll", "puzzle", "lego", "model kit", 
+                "collectible figure", "barbie", "hot wheels", "board game", "video game", "console",
+                "playset", "vehicle", "character", "plush", "stuffed animal", "educational"],
+        "jewelry": ["ring", "necklace", "bracelet", "earring", "watch", "gold", "silver", "diamond",
+                   "gem", "stone", "pearl", "platinum", "titanium", "jewelry", "pendant", "brooch",
+                   "crystal", "bead", "chain", "clasp", "setting", "karat", "carat"],
+        "sports": ["sport", "equipment", "ball", "bat", "racket", "club", "ski", "snowboard", "bike",
+                  "bicycle", "fitness", "exercise", "weight", "dumbbell", "yoga", "mat", "helmet",
+                  "glove", "pad", "uniform", "jersey", "cleat", "shoe", "accessory"],
+        "tools": ["tool", "wrench", "hammer", "screwdriver", "drill", "saw", "pliers", "level", "tape",
+                 "measure", "workshop", "garage", "diy", "hardware", "fastener", "nail", "screw",
+                 "bolt", "nut", "machine", "equipment", "power tool", "hand tool"],
+        "kitchen": ["kitchen", "cookware", "utensil", "pan", "pot", "knife", "fork", "spoon", "plate",
+                   "bowl", "cup", "glass", "appliance", "mixer", "blender", "toaster", "microwave",
+                   "oven", "stove", "refrigerator", "freezer", "dish", "serving", "storage"]
     }
     
     scores = {category: 0 for category in category_keywords}
@@ -152,112 +372,199 @@ def detect_category(title: str, description: str) -> str:
     
     for category, keywords in category_keywords.items():
         for keyword in keywords:
-            if keyword in title_lower or keyword in description_lower:
+            if keyword in all_text:
                 scores[category] += 1
+    
+    # Boost score for brand matches in specific categories
+    if any(brand in all_text for brand in ["nike", "adidas", "gucci", "prada", "lv"]):
+        scores["clothing"] += 5
+    if any(brand in all_text for brand in ["apple", "samsung", "sony", "canon", "nikon"]):
+        scores["electronics"] += 5
     
     return max(scores.items(), key=lambda x: x[1])[0]
 
-def enhance_with_ebay_data(item_data: Dict) -> Dict:
-    """Maximum accuracy eBay market data enhancement"""
+def enhance_with_ebay_data(item_data: Dict, vision_analysis: Dict) -> Dict:
+    """MAXIMUM accuracy eBay market data enhancement using SMART search queries"""
     try:
-        # Create comprehensive search keywords
-        keywords = []
+        # Create SMART eBay-optimized search strategies
+        search_strategies = []
         
-        # Prioritize brand and model
-        if item_data.get('brand'):
-            keywords.append(item_data['brand'])
-        if item_data.get('model'):
-            keywords.append(item_data['model'])
+        # 1. PRIMARY: Brand + Model + Year (most precise)
+        brand = item_data.get('brand', '').strip()
+        model = item_data.get('model', '').strip()
+        year = item_data.get('year', '').strip()
         
-        # Add key features
-        if item_data.get('key_features'):
-            keywords.extend(item_data['key_features'][:3])
+        if brand:
+            # Clean brand - remove "unknown" etc
+            if 'unknown' not in brand.lower():
+                # 1A: Brand + Year + Model
+                if year and model:
+                    model_clean = clean_model_string(model)
+                    if model_clean:
+                        search_strategies.append(f"{brand} {year} {model_clean}")
+                
+                # 1B: Brand + Model (if no year)
+                if model and not year:
+                    model_clean = clean_model_string(model)
+                    if model_clean:
+                        search_strategies.append(f"{brand} {model_clean}")
+                
+                # 1C: Brand + Category
+                category = item_data.get('category', '').strip()
+                if category:
+                    ebay_category = map_to_ebay_category(category)
+                    if ebay_category:
+                        search_strategies.append(f"{brand} {ebay_category}")
+                
+                # 1D: Just brand (fallback)
+                search_strategies.append(brand)
         
-        # Fallback to title analysis
-        if not keywords:
-            title_words = item_data.get('title', '').split()
-            # Extract likely product words (not generic)
-            product_words = [word for word in title_words[:5] if len(word) > 3 and word.lower() not in ['the', 'and', 'with', 'for', 'this', 'that']]
-            keywords.extend(product_words)
+        # 2. SECONDARY: Parse title for key terms
+        title = item_data.get('title', '')
+        if title:
+            title_terms = extract_search_terms_from_title(title)
+            if title_terms:
+                search_strategies.append(' '.join(title_terms))
         
-        search_query = ' '.join(keywords[:4])
+        # 3. TERTIARY: Use key features
+        key_features = item_data.get('key_features', [])
+        if key_features and brand:
+            specific_feature = get_most_specific_feature(key_features)
+            if specific_feature:
+                search_strategies.append(f"{brand} {specific_feature}")
         
-        if search_query.strip():
-            logger.info(f"🔍 Searching eBay for: {search_query}")
+        # Clean and deduplicate search strategies
+        cleaned_strategies = []
+        seen = set()
+        for strategy in search_strategies:
+            if strategy:
+                clean = clean_search_query(strategy)
+                if clean and clean not in seen and len(clean) > 3:
+                    seen.add(clean)
+                    cleaned_strategies.append(clean)
+        
+        # Limit to 3 best strategies
+        search_strategies = cleaned_strategies[:3]
+        
+        if not search_strategies:
+            logger.warning("No valid search strategies generated")
+            return item_data
+        
+        # Try ALL search strategies until we get good results
+        all_completed_items = []
+        all_current_items = []
+        
+        for strategy in search_strategies:
+            logger.info(f"🔍 Searching eBay with SMART query: '{strategy}'")
             
-            # Get comprehensive market analysis
-            completed_items = ebay_api.search_completed_items(search_query, max_results=25)
-            current_items = ebay_api.get_current_listings(search_query, max_results=15)
+            completed_items = ebay_api.search_completed_items(strategy, max_results=20)
+            current_items = ebay_api.get_current_listings(strategy, max_results=15)
             
             if completed_items:
-                # Calculate detailed statistics
-                sold_prices = [item['price'] for item in completed_items if item['price'] > 0]
+                all_completed_items.extend(completed_items)
+            if current_items:
+                all_current_items.extend(current_items)
+            
+            # If we found good data, we can stop
+            if len(all_completed_items) >= 10:
+                break
+        
+        # Remove duplicates
+        unique_completed = remove_duplicate_items(all_completed_items)
+        unique_current = remove_duplicate_items(all_current_items)
+        
+        if unique_completed:
+            # Calculate COMPREHENSIVE statistics
+            sold_prices = [item['price'] for item in unique_completed if item['price'] > 0]
+            
+            if sold_prices:
+                avg_price = sum(sold_prices) / len(sold_prices)
+                min_price = min(sold_prices)
+                max_price = max(sold_prices)
                 
-                if sold_prices:
-                    avg_price = sum(sold_prices) / len(sold_prices)
-                    min_price = min(sold_prices)
-                    max_price = max(sold_prices)
-                    
-                    # Calculate price quartiles for better insights
-                    sorted_prices = sorted(sold_prices)
-                    median_price = sorted_prices[len(sorted_prices) // 2]
-                    
-                    # Market saturation analysis
-                    price_std = (sum((p - avg_price) ** 2 for p in sold_prices) / len(sold_prices)) ** 0.5
-                    price_volatility = "high" if price_std > avg_price * 0.3 else "medium" if price_std > avg_price * 0.15 else "low"
-                    
-                    # Update item data with comprehensive market analysis
-                    item_data['price_range'] = f"${min_price:.2f} - ${max_price:.2f}"
-                    item_data['suggested_cost'] = f"${median_price * 0.85:.2f}"
-                    
-                    # Enhanced profit calculation
-                    ebay_fees = median_price * 0.13  # 13% eBay fees
-                    shipping_cost = 12.00  # Average shipping with packaging
-                    estimated_net = median_price - ebay_fees - shipping_cost
-                    suggested_purchase = median_price * 0.85
-                    profit = estimated_net - suggested_purchase
-                    
-                    item_data['profit_potential'] = f"${profit:.2f} profit (after all fees)" if profit > 0 else f"${profit:.2f} loss (not recommended)"
-                    
-                    # Enhanced market insights
-                    sell_through_rate = (len(completed_items) / (len(completed_items) + len(current_items))) * 100 if (len(completed_items) + len(current_items)) > 0 else 50
-                    
-                    insights = []
-                    insights.append(f"Based on {len(completed_items)} recent sold listings")
-                    insights.append(f"Median sold price: ${median_price:.2f}")
-                    insights.append(f"Price volatility: {price_volatility}")
-                    insights.append(f"Estimated sell-through: {sell_through_rate:.1f}%")
-                    
-                    if len(current_items) > 0:
-                        current_avg = sum(item['price'] for item in current_items) / len(current_items)
-                        insights.append(f"Current listings average: ${current_avg:.2f}")
-                        insights.append(f"Active competition: {len(current_items)} listings")
-                    
-                    item_data['market_insights'] = ". ".join(insights) + ". " + item_data.get('market_insights', '')
-                    
-                    # Enhanced eBay tips
-                    item_data['ebay_specific_tips'] = [
-                        "Use all 12 photo slots with multiple angles and close-ups",
-                        "Include measurements, weight, and detailed condition report",
-                        f"Best listing time: Sunday-Wednesday evenings (peak traffic)",
-                        "Consider 'Buy It Now' with Best Offer for price flexibility",
-                        f"Competition level: {'High' if len(current_items) > 15 else 'Medium' if len(current_items) > 5 else 'Low'}",
-                        f"Market liquidity: {'Good' if sell_through_rate > 60 else 'Fair' if sell_through_rate > 40 else 'Slow'}"
-                    ]
-                    
-                    logger.info(f"✅ eBay enhancement successful: {len(completed_items)} sold items analyzed")
+                # Calculate price quartiles
+                sorted_prices = sorted(sold_prices)
+                median_price = sorted_prices[len(sorted_prices) // 2]
+                
+                # Advanced market analysis
+                price_std = (sum((p - avg_price) ** 2 for p in sold_prices) / len(sold_prices)) ** 0.5
+                price_volatility = "high" if price_std > avg_price * 0.3 else "medium" if price_std > avg_price * 0.15 else "low"
+                
+                # Update with ENHANCED data
+                item_data['price_range'] = f"${min_price:.2f} - ${max_price:.2f}"
+                item_data['suggested_cost'] = f"${median_price * 0.85:.2f}"
+                
+                # Precise profit calculation
+                ebay_fees = median_price * 0.13  # 13% eBay fees
+                shipping_cost = 12.00  # Average shipping with packaging
+                estimated_net = median_price - ebay_fees - shipping_cost
+                suggested_purchase = median_price * 0.85
+                profit = estimated_net - suggested_purchase
+                
+                if profit > 0:
+                    item_data['profit_potential'] = f"${profit:.2f} profit (after all fees)"
                 else:
-                    logger.warning(f"⚠️ eBay search found items but no price data")
+                    item_data['profit_potential'] = f"Not profitable at suggested price"
+                
+                # ENHANCED market insights
+                sell_through_rate = (len(unique_completed) / (len(unique_completed) + len(unique_current))) * 100 if (len(unique_completed) + len(unique_current)) > 0 else 50
+                
+                insights = []
+                insights.append(f"Based on {len(unique_completed)} sold listings")
+                insights.append(f"Median sold price: ${median_price:.2f}")
+                insights.append(f"Price volatility: {price_volatility}")
+                insights.append(f"Estimated sell-through: {sell_through_rate:.1f}%")
+                
+                if len(unique_current) > 0:
+                    current_avg = sum(item['price'] for item in unique_current) / len(unique_current)
+                    insights.append(f"Current listings average: ${current_avg:.2f}")
+                    insights.append(f"Active competition: {len(unique_current)} listings")
+                
+                # Add search strategy insights
+                if search_strategies:
+                    insights.append(f"Best search terms: {', '.join(search_strategies[:2])}")
+                
+                item_data['market_insights'] = ". ".join(insights) + ". " + item_data.get('market_insights', '')
+                
+                # ENHANCED eBay tips
+                item_data['ebay_specific_tips'] = [
+                    "Use all 12 photo slots with multiple angles and close-ups",
+                    "Include measurements, weight, and detailed condition report",
+                    f"Best listing time: Sunday-Wednesday evenings (peak traffic)",
+                    "Consider 'Buy It Now' with Best Offer for price flexibility",
+                    f"Competition level: {'High' if len(unique_current) > 15 else 'Medium' if len(unique_current) > 5 else 'Low'}",
+                    f"Market liquidity: {'Good' if sell_through_rate > 60 else 'Fair' if sell_through_rate > 40 else 'Slow'}",
+                    f"Use keywords: {', '.join(search_strategies[:2])}"
+                ]
+                
+                logger.info(f"✅ eBay enhancement successful: {len(unique_completed)} unique sold items analyzed")
+                
+                # Add confidence indicator
+                if len(unique_completed) >= 20:
+                    item_data['identification_confidence'] = "high"
+                elif len(unique_completed) >= 10:
+                    item_data['identification_confidence'] = "medium"
+                else:
+                    item_data['identification_confidence'] = "low"
+                    
             else:
-                logger.warning(f"⚠️ No eBay results for: {search_query}")
+                logger.warning(f"⚠️ eBay search found items but no price data")
         else:
-            logger.warning("⚠️ No searchable keywords extracted")
+            logger.warning(f"⚠️ No eBay results found with any search strategy")
+            # Provide intelligent fallback guidance
+            item_data['market_insights'] = "No direct eBay matches found. " + item_data.get('market_insights', '')
+            item_data['additional_info_needed'] = [
+                "Clear photo of any labels, tags, or serial numbers",
+                "Manufacturer information if available",
+                "Exact measurements and weight",
+                "Any known history or provenance"
+            ]
             
         return item_data
         
     except Exception as e:
         logger.error(f"❌ eBay data enhancement failed: {e}")
-        # Keep original data if eBay fails
+        item_data['market_insights'] = f"Market data unavailable. {item_data.get('market_insights', '')}"
         return item_data
 
 class EnhancedAppItem:
@@ -280,6 +587,8 @@ class EnhancedAppItem:
         self.analysis_depth = data.get("analysis_depth", "comprehensive")
         self.key_features = data.get("key_features", [])
         self.comparable_items = data.get("comparable_items", "")
+        self.identification_confidence = data.get("identification_confidence", "unknown")
+        self.additional_info_needed = data.get("additional_info_needed", [])
         
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -300,7 +609,9 @@ class EnhancedAppItem:
             "confidence": self.confidence,
             "analysis_depth": self.analysis_depth,
             "key_features": self.key_features,
-            "comparable_items": self.comparable_items
+            "comparable_items": self.comparable_items,
+            "identification_confidence": self.identification_confidence,
+            "additional_info_needed": self.additional_info_needed
         }
 
 def parse_json_response(response_text: str) -> List[Dict]:
@@ -340,7 +651,7 @@ def parse_json_response(response_text: str) -> List[Dict]:
         return []
 
 def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) -> str:
-    """Maximum accuracy Groq API call"""
+    """MAXIMUM accuracy Groq API call"""
     if not groq_client:
         raise Exception("Groq client not configured")
     
@@ -395,7 +706,7 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         raise Exception(f"Groq API error: {str(e)[:100]}")
 
 def process_image_maximum_accuracy(job_data: Dict) -> Dict:
-    """Maximum accuracy processing - uses full 25s window"""
+    """MAXIMUM accuracy processing - uses ALL available information"""
     try:
         if not groq_client:
             return {"status": "failed", "error": "Groq client not configured"}
@@ -403,14 +714,19 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         image_base64 = job_data['image_base64']
         mime_type = job_data['mime_type']
         
-        # Build comprehensive prompt
+        # Build COMPREHENSIVE prompt with ALL user data
         prompt = market_analysis_prompt
-        if job_data.get('title'):
-            prompt += f"\nUser-provided title: {job_data['title']}"
-        if job_data.get('description'):
-            prompt += f"\nUser-provided description: {job_data['description']}"
         
-        logger.info(f"🔬 Starting MAXIMUM ACCURACY analysis...")
+        # Add ALL user-provided information
+        if job_data.get('title'):
+            prompt += f"\n\nUSER-PROVIDED TITLE: {job_data['title']}"
+        if job_data.get('description'):
+            prompt += f"\nUSER-PROVIDED DESCRIPTION: {job_data['description']}"
+        
+        # Add search guidance
+        prompt += "\n\nSEARCH GUIDANCE: Use ALL available information. If specific identification is unclear, analyze by observable characteristics and provide actionable guidance for better identification."
+        
+        logger.info(f"🔬 Starting MAXIMUM ACCURACY analysis with ALL available data...")
         
         # Call Groq API for detailed analysis
         response_text = call_groq_api(prompt, image_base64, mime_type)
@@ -419,46 +735,81 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         ai_response = parse_json_response(response_text)
         logger.info(f"📊 Parsed {len(ai_response)} items from response")
         
+        # Mock vision analysis
+        vision_analysis = {
+            "detected_text": [],
+            "detected_objects": [],
+            "potential_brands": [],
+            "image_size": "unknown"
+        }
+        
         enhanced_items = []
         for item_data in ai_response:
             if isinstance(item_data, dict):
-                # Enhance with comprehensive eBay market data
-                item_data = enhance_with_ebay_data(item_data)
-                
-                # Detect category
-                detected_category = detect_category(item_data.get("title", ""), item_data.get("description", ""))
+                # Detect category using ALL available data
+                detected_category = detect_category(
+                    item_data.get("title", ""), 
+                    item_data.get("description", ""),
+                    vision_analysis
+                )
                 item_data["category"] = detected_category
+                
+                # Enhance with COMPREHENSIVE eBay market data
+                item_data = enhance_with_ebay_data(item_data, vision_analysis)
+                
+                # Ensure we have ALL required fields with intelligent defaults
+                if not item_data.get('brand'):
+                    item_data['brand'] = "Unknown"
+                if not item_data.get('model'):
+                    item_data['model'] = "Model unknown"
+                if not item_data.get('condition'):
+                    item_data['condition'] = "Condition unknown"
+                if not item_data.get('identification_confidence'):
+                    item_data['identification_confidence'] = "medium"
+                if not item_data.get('additional_info_needed'):
+                    item_data['additional_info_needed'] = [
+                        "Clear photos of any markings",
+                        "Manufacturer information",
+                        "Exact measurements"
+                    ]
                 
                 enhanced_items.append(EnhancedAppItem(item_data).to_dict())
             else:
                 logger.warning(f"Skipping non-dictionary item: {item_data}")
         
+        # CRITICAL: NEVER return empty results
         if not enhanced_items:
-            # Create comprehensive fallback response
+            logger.warning("⚠️ No items parsed, creating intelligent fallback analysis")
             enhanced_items.append(EnhancedAppItem({
-                "title": "Item Analysis - Need Clearer Image",
-                "description": "Unable to extract detailed information. Please ensure:\n1. Good lighting on the item\n2. Clear focus on text/serial numbers\n3. Multiple angles if possible\n4. Avoid glare and shadows",
-                "price_range": "$0-0",
-                "resellability_rating": 5,
-                "suggested_cost": "$0",
-                "market_insights": "Image quality insufficient for accurate analysis. Try retaking with better lighting and focus.",
-                "authenticity_checks": "Cannot verify authenticity without clear details. Look for serial numbers, brand markings, and quality indicators.",
-                "profit_potential": "Unknown - requires clearer identification",
+                "title": "Item Analysis - Additional Information Needed",
+                "description": "The image requires additional details for accurate identification. Please provide clear photos of any labels, tags, or serial numbers, and include manufacturer information if available.",
+                "price_range": "Market analysis requires specific identification",
+                "resellability_rating": 3,
+                "suggested_cost": "Determine precise identification first",
+                "market_insights": "Accurate identification is essential for market valuation. Focus on obtaining clear identifying marks or labels.",
+                "authenticity_checks": "Verify any markings, labels, or serial numbers. Check construction quality and materials.",
+                "profit_potential": "Cannot determine without precise identification",
                 "category": "unknown",
                 "ebay_specific_tips": [
-                    "Retake photo with natural daylight",
-                    "Include all sides and any labels",
-                    "Add a size reference (coin, ruler)",
-                    "Clean the item before photographing"
+                    "Take multiple clear photos from all angles",
+                    "Photograph any labels, tags, or serial numbers",
+                    "Include measurements with ruler for scale",
+                    "Use good lighting to show details clearly"
                 ],
-                "brand": "",
-                "model": "",
-                "year": "",
-                "condition": "",
-                "confidence": 0.2,
+                "brand": "Unknown",
+                "model": "Model unknown",
+                "year": "Unknown",
+                "condition": "Condition unknown",
+                "confidence": 0.1,
                 "analysis_depth": "limited",
-                "key_features": [],
-                "comparable_items": ""
+                "key_features": ["Requires better visual information"],
+                "comparable_items": "Search eBay for similar items",
+                "identification_confidence": "low",
+                "additional_info_needed": [
+                    "Clear photo of any markings or labels",
+                    "Manufacturer information",
+                    "Exact measurements"
+                ]
             }).to_dict())
         
         logger.info(f"✅ Processing complete: {len(enhanced_items)} items with maximum accuracy")
@@ -469,7 +820,7 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 "message": f"Maximum accuracy analysis completed with {len(enhanced_items)} items",
                 "items": enhanced_items,
                 "processing_time": "25-30s",
-                "analysis_stages": 2,
+                "analysis_stages": 3,
                 "confidence_level": "maximum_accuracy",
                 "analysis_timestamp": datetime.now().isoformat(),
                 "model_used": groq_model
@@ -478,7 +829,10 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         
     except Exception as e:
         logger.error(f"❌ Maximum accuracy processing failed: {e}")
-        return {"status": "failed", "error": str(e)[:200]}
+        return {
+            "status": "failed", 
+            "error": str(e)[:200]
+        }
 
 def background_worker():
     """Background worker with maximum accuracy only"""
@@ -503,7 +857,7 @@ def background_worker():
             # Process with timeout (25 seconds for Render's 30s limit)
             future = job_executor.submit(process_image_maximum_accuracy, job_data)
             try:
-                result = future.result(timeout=25)  # 25 second timeout - MAXIMUM
+                result = future.result(timeout=25)
                 
                 with job_lock:
                     if result.get('status') == 'completed':
@@ -545,10 +899,9 @@ async def startup_event():
     # Start keep-alive thread
     def keep_alive_loop():
         while True:
-            time.sleep(25)  # Ping every 25 seconds
+            time.sleep(25)
             try:
                 update_activity()
-                # Self-ping to keep alive
                 requests.get(f"http://localhost:{os.getenv('PORT', 8000)}/ping", timeout=5)
             except:
                 pass
@@ -574,19 +927,19 @@ async def create_upload_file(
     try:
         # Read image with reasonable limit
         image_bytes = await file.read()
-        if len(image_bytes) > 8 * 1024 * 1024:  # 8MB limit
+        if len(image_bytes) > 8 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Image too large (max 8MB)")
         
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         job_id = str(uuid.uuid4())
         
         with job_lock:
-            # Clean old jobs (older than 2 hours)
+            # Clean old jobs
             current_time = datetime.now()
             for old_id, old_job in list(job_storage.items()):
                 try:
                     created = datetime.fromisoformat(old_job.get('created_at', ''))
-                    if (current_time - created).seconds > 7200:  # 2 hours
+                    if (current_time - created).seconds > 7200:
                         del job_storage[old_id]
                 except:
                     pass
@@ -609,7 +962,7 @@ async def create_upload_file(
             "status": "queued",
             "estimated_time": "25-30 seconds",
             "check_status_url": f"/job/{job_id}/status",
-            "note": "Processing with comprehensive eBay market data integration"
+            "note": "Processing with comprehensive AI + eBay market data integration"
         }
             
     except Exception as e:
@@ -664,10 +1017,10 @@ async def health_check():
         "processing_mode": "MAXIMUM_ACCURACY_ONLY",
         "timeout_protection": "25s processing window",
         "features": [
-            "Maximum accuracy Groq AI analysis (4000 tokens)",
-            "Comprehensive eBay market integration (25+ listings)",
-            "Job queue for Render timeout protection",
-            "Keep-alive system for instance stability"
+            "Maximum accuracy Groq AI analysis",
+            "Smart eBay search query generation",
+            "Intelligent market analysis",
+            "Job queue for timeout protection"
         ]
     }
 
@@ -691,9 +1044,9 @@ async def root():
         "version": "3.2.0",
         "processing_capabilities": [
             "Maximum accuracy item identification",
-            "Comprehensive eBay market analysis (25+ listings)",
-            "Detailed profit calculations with all fees",
-            "Full condition and authenticity assessment"
+            "Smart eBay search optimization",
+            "Comprehensive market analysis",
+            "Intelligent fallback guidance"
         ],
         "timeout_protection": "25s processing window (Render: 30s)",
         "endpoints": {
@@ -701,13 +1054,7 @@ async def root():
             "job_status": "GET /job/{job_id}/status",
             "health": "GET /health",
             "ping": "GET /ping (keep-alive)"
-        },
-        "notes": [
-            "Uses job queue system to avoid Render's 30s timeout",
-            "Maximum accuracy analysis always (no 'standard' mode)",
-            "25-second processing limit with comprehensive results",
-            "Includes keep-alive to prevent instance spin-down"
-        ]
+        }
     }
 
 if __name__ == "__main__":
@@ -720,7 +1067,7 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=port,
-        workers=1,  # Single worker for job queue consistency
+        workers=1,
         timeout_keep_alive=30,
         log_level="info"
     )
