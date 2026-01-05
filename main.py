@@ -56,7 +56,7 @@ try:
         raise ValueError("GOOGLE_API_KEY environment variable not set")
     
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash-preview-05-20')
+    model = genai.GenerativeModel('gemini-2.0-flash')
     logger.info("Google Generative AI configured successfully")
 except Exception as e:
     logger.error(f"Failed to configure Google Generative AI: {e}")
