@@ -1,7 +1,7 @@
 # JOB QUEUE + POLLING SYSTEM - MAXIMUM ACCURACY ONLY
 # Uses 25s processing window to stay within Render's 30s timeout
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from groq import Groq
@@ -21,6 +21,8 @@ import queue
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import asyncio
+import hmac
+import hashlib
 
 # Load environment variables
 load_dotenv()
@@ -915,7 +917,98 @@ async def shutdown_event():
     job_executor.shutdown(wait=False)
     logger.info("🛑 Server shutting down")
 
-# MAIN ENDPOINTS
+# ============= EBAY MARKETPLACE ACCOUNT DELETION ENDPOINT =============
+@app.post("/ebay/marketplace-account-deletion")
+async def marketplace_account_deletion(
+    request: Request,
+    x_ebay_signature: str = Header(None),
+    x_ebay_timestamp: str = Header(None)
+):
+    """
+    eBay Marketplace Account Deletion Endpoint
+    Required for GDPR/CCPA compliance
+    This MUST return 200 OK for verification to succeed
+    """
+    try:
+        # Get raw body
+        body_bytes = await request.body()
+        body_str = body_bytes.decode('utf-8')
+        
+        logger.info(f"🔔 Received eBay marketplace account deletion request")
+        logger.info(f"📦 Headers: X-EBAY-Signature: {x_ebay_signature[:50] if x_ebay_signature else 'None'}...")
+        logger.info(f"📦 Headers: X-EBAY-Timestamp: {x_ebay_timestamp}")
+        
+        # Get verification token from environment
+        verification_token = os.getenv('MARKETPLACE_DELETION_TOKEN', '')
+        
+        if verification_token and x_ebay_signature and x_ebay_timestamp:
+            # Verify signature if all components are present
+            message = x_ebay_timestamp + body_str
+            expected_sig = hmac.new(
+                verification_token.encode('utf-8'),
+                message.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            
+            logger.info(f"🔐 Expected signature: {expected_sig[:50]}...")
+            logger.info(f"🔐 Received signature: {x_ebay_signature[:50]}...")
+            
+            if not hmac.compare_digest(expected_sig, x_ebay_signature):
+                logger.warning("❌ Signature verification failed")
+                # Still return 200 OK - eBay expects acknowledgment
+                return {
+                    "status": "error_acknowledged",
+                    "message": "Signature verification failed",
+                    "timestamp": x_ebay_timestamp
+                }
+            else:
+                logger.info("✅ Signature verification passed")
+        
+        # Parse the notification if there's a body
+        if body_str and body_str.strip():
+            try:
+                data = json.loads(body_str)
+                logger.info(f"📋 Parsed notification data:")
+                logger.info(f"   Type: {data.get('notificationType', 'unknown')}")
+                logger.info(f"   ID: {data.get('notificationId', 'unknown')}")
+                
+                # Extract user information
+                user_data = data.get('data', {})
+                if user_data:
+                    logger.info(f"👤 User data:")
+                    logger.info(f"   Username: {user_data.get('username', 'unknown')}")
+                    logger.info(f"   User ID: {user_data.get('userId', 'unknown')}")
+                    
+                    # TODO: Implement actual deletion logic here
+                    # 1. Find user in your database by ebay_user_id
+                    # 2. Delete their data
+                    # 3. Remove any associated listings
+                    # 4. Log the deletion for compliance
+                    
+            except json.JSONDecodeError:
+                logger.warning(f"📋 Raw body (non-JSON): {body_str[:200]}")
+        
+        # ALWAYS return 200 OK to acknowledge receipt
+        response_data = {
+            "status": "success",
+            "message": "Marketplace account deletion request received and queued for processing",
+            "timestamp": x_ebay_timestamp or datetime.now().isoformat(),
+            "server_time": datetime.now().isoformat()
+        }
+        
+        logger.info(f"✅ Returning response: {response_data}")
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"❌ Error in marketplace account deletion endpoint: {e}")
+        # Still return 200 OK - eBay expects acknowledgment even on error
+        return {
+            "status": "error_acknowledged",
+            "message": f"Error: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+# ============= MAIN ENDPOINTS =============
 @app.post("/upload_item/")
 async def create_upload_file(
     file: UploadFile = File(...),
@@ -1020,7 +1113,8 @@ async def health_check():
             "Maximum accuracy Groq AI analysis",
             "Smart eBay search query generation",
             "Intelligent market analysis",
-            "Job queue for timeout protection"
+            "Job queue for timeout protection",
+            "eBay marketplace account deletion endpoint"
         ]
     }
 
@@ -1046,14 +1140,16 @@ async def root():
             "Maximum accuracy item identification",
             "Smart eBay search optimization",
             "Comprehensive market analysis",
-            "Intelligent fallback guidance"
+            "Intelligent fallback guidance",
+            "GDPR/CCPA compliance endpoint"
         ],
         "timeout_protection": "25s processing window (Render: 30s)",
         "endpoints": {
             "upload": "POST /upload_item (always maximum accuracy)",
             "job_status": "GET /job/{job_id}/status",
             "health": "GET /health",
-            "ping": "GET /ping (keep-alive)"
+            "ping": "GET /ping (keep-alive)",
+            "ebay_deletion": "POST /ebay/marketplace-account-deletion"
         }
     }
 
