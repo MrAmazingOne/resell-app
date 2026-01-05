@@ -1,5 +1,5 @@
-# JOB QUEUE + POLLING SYSTEM - FULL ACCURACY VERSION
-# Maintains full analysis accuracy while working within Render's 30s timeout
+# JOB QUEUE + POLLING SYSTEM - MAXIMUM ACCURACY ONLY
+# Uses 25s processing window to stay within Render's 30s timeout
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="AI Resell Pro API - Full Accuracy", 
+    title="AI Resell Pro API - Maximum Accuracy", 
     version="3.2.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -78,7 +78,7 @@ def update_activity():
         global last_activity
         last_activity = time.time()
 
-# FULL DETAILED MARKET ANALYSIS PROMPT (MAINTAINING ACCURACY)
+# MAXIMUM ACCURACY MARKET ANALYSIS PROMPT
 market_analysis_prompt = """
 EXPERT RESELL ANALYST - MAXIMUM ACCURACY ANALYSIS:
 
@@ -134,17 +134,17 @@ IMPORTANT: Return ONLY valid JSON, no additional text or explanations.
 """
 
 def detect_category(title: str, description: str) -> str:
-    """Accurate category detection"""
+    """Maximum accuracy category detection"""
     title_lower = title.lower()
     description_lower = description.lower()
     
     category_keywords = {
-        "electronics": ["electronic", "computer", "phone", "tablet", "camera", "laptop", "charger", "battery", "screen", "iphone", "samsung", "android"],
-        "clothing": ["shirt", "pants", "dress", "jacket", "shoe", "sweater", "fabric", "cotton", "wool", "brand", "nike", "adidas", "levi"],
-        "furniture": ["chair", "table", "desk", "cabinet", "sofa", "couch", "wood", "furniture", "drawer", "shelf", "bed"],
-        "collectibles": ["collectible", "rare", "vintage", "antique", "edition", "limited", "signed", "autograph", "memorabilia"],
-        "books": ["book", "novel", "author", "page", "edition", "publish", "hardcover", "paperback", "literature"],
-        "toys": ["toy", "game", "play", "action figure", "doll", "puzzle", "lego", "model kit", "collectible figure"]
+        "electronics": ["electronic", "computer", "phone", "tablet", "camera", "laptop", "charger", "battery", "screen", "iphone", "samsung", "android", "macbook", "ipad", "headphones", "speaker"],
+        "clothing": ["shirt", "pants", "dress", "jacket", "shoe", "sweater", "fabric", "cotton", "wool", "brand", "nike", "adidas", "levi", "gucci", "prada", "lv", "sneaker", "boot"],
+        "furniture": ["chair", "table", "desk", "cabinet", "sofa", "couch", "wood", "furniture", "drawer", "shelf", "bed", "dresser", "wardrobe", "ottoman", "recliner"],
+        "collectibles": ["collectible", "rare", "vintage", "antique", "edition", "limited", "signed", "autograph", "memorabilia", "coin", "stamp", "trading card", "funko", "figure"],
+        "books": ["book", "novel", "author", "page", "edition", "publish", "hardcover", "paperback", "literature", "comic", "manga", "textbook"],
+        "toys": ["toy", "game", "play", "action figure", "doll", "puzzle", "lego", "model kit", "collectible figure", "barbie", "hot wheels", "board game"]
     }
     
     scores = {category: 0 for category in category_keywords}
@@ -158,7 +158,7 @@ def detect_category(title: str, description: str) -> str:
     return max(scores.items(), key=lambda x: x[1])[0]
 
 def enhance_with_ebay_data(item_data: Dict) -> Dict:
-    """Full eBay market data enhancement with proper error handling"""
+    """Maximum accuracy eBay market data enhancement"""
     try:
         # Create comprehensive search keywords
         keywords = []
@@ -171,23 +171,23 @@ def enhance_with_ebay_data(item_data: Dict) -> Dict:
         
         # Add key features
         if item_data.get('key_features'):
-            keywords.extend(item_data['key_features'][:2])
+            keywords.extend(item_data['key_features'][:3])
         
         # Fallback to title analysis
         if not keywords:
             title_words = item_data.get('title', '').split()
             # Extract likely product words (not generic)
-            product_words = [word for word in title_words[:4] if len(word) > 3 and word.lower() not in ['the', 'and', 'with', 'for']]
+            product_words = [word for word in title_words[:5] if len(word) > 3 and word.lower() not in ['the', 'and', 'with', 'for', 'this', 'that']]
             keywords.extend(product_words)
         
-        search_query = ' '.join(keywords[:4])  # Use up to 4 keywords
+        search_query = ' '.join(keywords[:4])
         
         if search_query.strip():
             logger.info(f"🔍 Searching eBay for: {search_query}")
             
             # Get comprehensive market analysis
-            completed_items = ebay_api.search_completed_items(search_query, max_results=20)
-            current_items = ebay_api.get_current_listings(search_query, max_results=10)
+            completed_items = ebay_api.search_completed_items(search_query, max_results=25)
+            current_items = ebay_api.get_current_listings(search_query, max_results=15)
             
             if completed_items:
                 # Calculate detailed statistics
@@ -231,6 +231,7 @@ def enhance_with_ebay_data(item_data: Dict) -> Dict:
                     if len(current_items) > 0:
                         current_avg = sum(item['price'] for item in current_items) / len(current_items)
                         insights.append(f"Current listings average: ${current_avg:.2f}")
+                        insights.append(f"Active competition: {len(current_items)} listings")
                     
                     item_data['market_insights'] = ". ".join(insights) + ". " + item_data.get('market_insights', '')
                     
@@ -276,7 +277,7 @@ class EnhancedAppItem:
         self.year = data.get("year", "")
         self.condition = data.get("condition", "")
         self.confidence = data.get("confidence", 0.5)
-        self.analysis_depth = data.get("analysis_depth", "standard")
+        self.analysis_depth = data.get("analysis_depth", "comprehensive")
         self.key_features = data.get("key_features", [])
         self.comparable_items = data.get("comparable_items", "")
         
@@ -303,7 +304,7 @@ class EnhancedAppItem:
         }
 
 def parse_json_response(response_text: str) -> List[Dict]:
-    """Robust JSON parsing maintaining all details"""
+    """Robust JSON parsing for maximum accuracy"""
     try:
         json_text = response_text.strip()
         
@@ -339,7 +340,7 @@ def parse_json_response(response_text: str) -> List[Dict]:
         return []
 
 def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) -> str:
-    """Full-featured Groq API call with timeout protection"""
+    """Maximum accuracy Groq API call"""
     if not groq_client:
         raise Exception("Groq client not configured")
     
@@ -393,8 +394,8 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         logger.error(f"Groq API call failed: {e}")
         raise Exception(f"Groq API error: {str(e)[:100]}")
 
-def process_image_full_accuracy(job_data: Dict) -> Dict:
-    """Full accuracy processing with all features"""
+def process_image_maximum_accuracy(job_data: Dict) -> Dict:
+    """Maximum accuracy processing - uses full 25s window"""
     try:
         if not groq_client:
             return {"status": "failed", "error": "Groq client not configured"}
@@ -409,11 +410,7 @@ def process_image_full_accuracy(job_data: Dict) -> Dict:
         if job_data.get('description'):
             prompt += f"\nUser-provided description: {job_data['description']}"
         
-        accuracy_mode = job_data.get('accuracy_mode', 'maximum')
-        if accuracy_mode == 'maximum':
-            prompt += "\n\nANALYSIS MODE: MAXIMUM ACCURACY - Provide the most detailed analysis possible."
-        
-        logger.info(f"🔬 Starting {accuracy_mode} accuracy analysis...")
+        logger.info(f"🔬 Starting MAXIMUM ACCURACY analysis...")
         
         # Call Groq API for detailed analysis
         response_text = call_groq_api(prompt, image_base64, mime_type)
@@ -464,29 +461,28 @@ def process_image_full_accuracy(job_data: Dict) -> Dict:
                 "comparable_items": ""
             }).to_dict())
         
-        logger.info(f"✅ Processing complete: {len(enhanced_items)} items with full analysis")
+        logger.info(f"✅ Processing complete: {len(enhanced_items)} items with maximum accuracy")
         
         return {
             "status": "completed",
             "result": {
-                "message": f"Comprehensive analysis completed with {len(enhanced_items)} items",
+                "message": f"Maximum accuracy analysis completed with {len(enhanced_items)} items",
                 "items": enhanced_items,
-                "processing_time": "20-30s",
+                "processing_time": "25-30s",
                 "analysis_stages": 2,
-                "confidence_level": "full_accuracy",
+                "confidence_level": "maximum_accuracy",
                 "analysis_timestamp": datetime.now().isoformat(),
-                "model_used": groq_model,
-                "accuracy_mode": accuracy_mode
+                "model_used": groq_model
             }
         }
         
     except Exception as e:
-        logger.error(f"❌ Full accuracy processing failed: {e}")
+        logger.error(f"❌ Maximum accuracy processing failed: {e}")
         return {"status": "failed", "error": str(e)[:200]}
 
 def background_worker():
-    """Background worker with full accuracy processing"""
-    logger.info("🎯 Background worker started - FULL ACCURACY MODE")
+    """Background worker with maximum accuracy only"""
+    logger.info("🎯 Background worker started - MAXIMUM ACCURACY ONLY")
     
     while True:
         try:
@@ -502,12 +498,12 @@ def background_worker():
                 job_data['started_at'] = datetime.now().isoformat()
                 job_storage[job_id] = job_data
             
-            logger.info(f"🔄 Processing job {job_id} with full accuracy...")
+            logger.info(f"🔄 Processing job {job_id} with maximum accuracy...")
             
             # Process with timeout (25 seconds for Render's 30s limit)
-            future = job_executor.submit(process_image_full_accuracy, job_data)
+            future = job_executor.submit(process_image_maximum_accuracy, job_data)
             try:
-                result = future.result(timeout=25)  # 25 second timeout
+                result = future.result(timeout=25)  # 25 second timeout - MAXIMUM
                 
                 with job_lock:
                     if result.get('status') == 'completed':
@@ -525,7 +521,7 @@ def background_worker():
             except FutureTimeoutError:
                 with job_lock:
                     job_data['status'] = 'failed'
-                    job_data['error'] = 'Processing timeout (25s) - Try with standard accuracy mode'
+                    job_data['error'] = 'Processing timeout (25s) - Server busy, please try again'
                     job_data['completed_at'] = datetime.now().isoformat()
                     job_storage[job_id] = job_data
                 logger.warning(f"⏱️ Job {job_id} timed out after 25 seconds")
@@ -544,7 +540,7 @@ def background_worker():
 @app.on_event("startup")
 async def startup_event():
     # Start background worker
-    threading.Thread(target=background_worker, daemon=True, name="JobWorker-FullAccuracy").start()
+    threading.Thread(target=background_worker, daemon=True, name="JobWorker-MaxAccuracy").start()
     
     # Start keep-alive thread
     def keep_alive_loop():
@@ -559,7 +555,7 @@ async def startup_event():
     
     threading.Thread(target=keep_alive_loop, daemon=True, name="KeepAlive").start()
     
-    logger.info("🚀 Server started with FULL ACCURACY processing and keep-alive")
+    logger.info("🚀 Server started with MAXIMUM ACCURACY processing only")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -571,8 +567,7 @@ async def shutdown_event():
 async def create_upload_file(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    accuracy_mode: str = Form("maximum")
+    description: Optional[str] = Form(None)
 ):
     update_activity()
     
@@ -601,20 +596,18 @@ async def create_upload_file(
                 'mime_type': file.content_type,
                 'title': title,
                 'description': description,
-                'accuracy_mode': accuracy_mode,
                 'status': 'queued',
                 'created_at': datetime.now().isoformat()
             }
         
         job_queue.put(job_id)
-        logger.info(f"📤 Job {job_id} queued (accuracy: {accuracy_mode})")
+        logger.info(f"📤 Job {job_id} queued (MAXIMUM ACCURACY)")
         
         return {
-            "message": "Analysis queued with FULL ACCURACY mode",
+            "message": "Analysis queued with MAXIMUM ACCURACY",
             "job_id": job_id,
             "status": "queued",
-            "accuracy_mode": accuracy_mode,
-            "estimated_time": "25-30 seconds for maximum accuracy",
+            "estimated_time": "25-30 seconds",
             "check_status_url": f"/job/{job_id}/status",
             "note": "Processing with comprehensive eBay market data integration"
         }
@@ -636,8 +629,7 @@ async def get_job_status(job_id: str):
     response = {
         "job_id": job_id,
         "status": job_data.get('status', 'unknown'),
-        "created_at": job_data.get('created_at'),
-        "accuracy_mode": job_data.get('accuracy_mode', 'maximum')
+        "created_at": job_data.get('created_at')
     }
     
     if job_data.get('status') == 'completed':
@@ -669,10 +661,11 @@ async def health_check():
         "jobs_stored": len(job_storage),
         "groq_status": groq_status,
         "ebay_status": ebay_status,
-        "processing_mode": "FULL_ACCURACY",
+        "processing_mode": "MAXIMUM_ACCURACY_ONLY",
+        "timeout_protection": "25s processing window",
         "features": [
-            "Comprehensive Groq AI analysis",
-            "Detailed eBay market integration",
+            "Maximum accuracy Groq AI analysis (4000 tokens)",
+            "Comprehensive eBay market integration (25+ listings)",
             "Job queue for Render timeout protection",
             "Keep-alive system for instance stability"
         ]
@@ -684,32 +677,35 @@ async def ping():
     return {
         "status": "✅ PONG",
         "timestamp": datetime.now().isoformat(),
-        "message": "Server is awake and processing with full accuracy",
-        "keep_alive": "active"
+        "message": "Server is awake and processing with maximum accuracy",
+        "keep_alive": "active",
+        "processing_mode": "maximum_accuracy"
     }
 
 @app.get("/")
 async def root():
     update_activity()
     return {
-        "message": "🎯 AI Resell Pro API - FULL ACCURACY EDITION",
+        "message": "🎯 AI Resell Pro API - MAXIMUM ACCURACY EDITION",
         "status": "🚀 OPERATIONAL",
         "version": "3.2.0",
         "processing_capabilities": [
             "Maximum accuracy item identification",
-            "Comprehensive eBay market analysis",
-            "Detailed profit calculations",
-            "Condition and authenticity assessment"
+            "Comprehensive eBay market analysis (25+ listings)",
+            "Detailed profit calculations with all fees",
+            "Full condition and authenticity assessment"
         ],
+        "timeout_protection": "25s processing window (Render: 30s)",
         "endpoints": {
-            "upload": "POST /upload_item (with accuracy_mode: maximum/standard)",
+            "upload": "POST /upload_item (always maximum accuracy)",
             "job_status": "GET /job/{job_id}/status",
             "health": "GET /health",
             "ping": "GET /ping (keep-alive)"
         },
         "notes": [
             "Uses job queue system to avoid Render's 30s timeout",
-            "Maintains full analysis accuracy while staying reliable",
+            "Maximum accuracy analysis always (no 'standard' mode)",
+            "25-second processing limit with comprehensive results",
             "Includes keep-alive to prevent instance spin-down"
         ]
     }
@@ -718,7 +714,7 @@ if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"🚀 Starting FULL ACCURACY server on port {port}")
+    logger.info(f"🚀 Starting MAXIMUM ACCURACY server on port {port}")
     
     uvicorn.run(
         app,
