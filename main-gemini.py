@@ -1,4 +1,4 @@
-# JOB QUEUE + POLLING SYSTEM
+ # JOB QUEUE + POLLING SYSTEM
 # This API is designed for Render's 30s timeout limit.
 # /upload_item/ queues jobs and returns a job_id immediately.
 # Clients must poll /job/{job_id}/status for results.
@@ -49,19 +49,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure Groq client with Llama 4 model
+# Configure Google Generative AI
 try:
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        raise ValueError("GROQ_API_KEY environment variable not set")
+        raise ValueError("GOOGLE_API_KEY environment variable not set")
     
-    groq_client = Groq(api_key=api_key)
-    groq_model = "meta-llama/llama-4-scout-17b-16e-instruct"
-    logger.info(f"Groq configured successfully with model: {groq_model}")
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash-lite-preview-02-05')
+    logger.info("Google Generative AI configured successfully")
 except Exception as e:
-    logger.error(f"Failed to configure Groq: {e}")
-    groq_client = None
-    groq_model = None
+    logger.error(f"Failed to configure Google Generative AI: {e}")
+    model = None
 
 # Category Enum for specialized analysis
 class ItemCategory(Enum):
@@ -190,8 +189,6 @@ Return analysis in JSON format:
 
 CRITICAL: Base pricing on actual market conditions, not retail prices.
 Account for condition issues that reduce value.
-
-IMPORTANT: Return ONLY valid JSON, no additional text or explanations.
 """
 
 def detect_category(title: str, description: str) -> ItemCategory:
@@ -351,70 +348,16 @@ def parse_json_response(response_text: str) -> List[Dict]:
         logger.warning(f"Response text that failed: {response_text[:200]}...")
         return []
 
-def encode_image_to_base64(image_base64: str) -> str:
-    """Convert base64 string to format suitable for Groq"""
-    # Remove data URL prefix if present
-    if image_base64.startswith('data:'):
-        # Extract just the base64 part
-        parts = image_base64.split(',', 1)
-        if len(parts) > 1:
-            return parts[1]
-    return image_base64
-
-def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) -> str:
-    """Call Groq API with text and optionally image input"""
-    messages = []
-    
-    # Add image content if provided
-    if image_base64 and mime_type:
-        # Prepare image content
-        encoded_image = encode_image_to_base64(image_base64)
-        image_content = {
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:{mime_type};base64,{encoded_image}"
-            }
-        }
-        messages.append({
-            "role": "user",
-            "content": [image_content, {"type": "text", "text": prompt}]
-        })
-    else:
-        # Text-only input
-        messages.append({
-            "role": "user",
-            "content": prompt
-        })
-    
-    try:
-        logger.info(f"Calling Groq API with model: {groq_model}")
-        response = groq_client.chat.completions.create(
-            model=groq_model,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=4000,
-            top_p=0.95,
-            stream=False
-        )
-        
-        if response.choices and len(response.choices) > 0:
-            return response.choices[0].message.content
-        else:
-            logger.error("Empty response from Groq API")
-            return ""
-            
-    except Exception as e:
-        logger.error(f"Groq API call failed: {e}")
-        raise Exception(f"Groq API error: {str(e)}")
-
 def process_image_standard(job_data: Dict) -> Dict:
-    """Enhanced single-stage processing with eBay market integration using Groq"""
+    """Enhanced single-stage processing with eBay market integration"""
     try:
-        if not groq_client:
-            return {"status": "failed", "error": "Groq client not configured"}
-        
         image_base64 = job_data['image_base64']
         mime_type = job_data['mime_type']
+        
+        image_part = {
+            "mime_type": mime_type,
+            "data": image_base64
+        }
         
         prompt = market_analysis_prompt
         if job_data.get('title'):
@@ -422,13 +365,11 @@ def process_image_standard(job_data: Dict) -> Dict:
         if job_data.get('description'):
             prompt += f"\nUser-provided description: {job_data['description']}"
         
-        logger.info("Starting enhanced market analysis with Groq...")
-        
-        # Call Groq API
-        response_text = call_groq_api(prompt, image_base64, mime_type)
+        logger.info("Starting enhanced market analysis...")
+        response = model.generate_content([prompt, image_part])
         logger.info("AI analysis completed, parsing response...")
         
-        ai_response = parse_json_response(response_text)
+        ai_response = parse_json_response(response.text)
         logger.info(f"Parsed {len(ai_response)} items from response")
         
         enhanced_items = []
@@ -452,8 +393,7 @@ def process_image_standard(job_data: Dict) -> Dict:
                 "processing_time": "25s",
                 "analysis_stages": 1,
                 "confidence_level": "enhanced_with_market_data",
-                "analysis_timestamp": datetime.now().isoformat(),
-                "model_used": groq_model
+                "analysis_timestamp": datetime.now().isoformat()
             }
         }
         
@@ -566,9 +506,7 @@ async def test_ebay_search(keywords: str):
 # Health check with eBay status
 @app.get("/health")
 async def health_check():
-    groq_status = "configured" if groq_client else "not_configured"
     ebay_status = "configured"
-    
     try:
         # Test eBay API with a simple search
         test_results = ebay_api.search_completed_items("iphone", max_results=1)
@@ -578,14 +516,13 @@ async def health_check():
     
     return {
         "status": "healthy",
-        "groq_configured": bool(groq_client),
-        "groq_model": groq_model,
+        "ai_configured": bool(model),
         "ebay_status": ebay_status,
+        "model": "gemini-2.5-flash-preview-05-20",
         "version": "3.1.0",
         "processing_mode": "enhanced_with_market_data",
         "features": [
             "Real eBay market data integration",
-            "Groq Llama 4 model analysis",
             "Completed listings analysis",
             "Profit calculation with fees",
             "Market trend analysis"
@@ -595,10 +532,9 @@ async def health_check():
 @app.get("/")
 async def root():
     return {
-        "message": "AI Resell Pro API v3.1 - Now with Groq Llama 4 & eBay Market Data! 🚀",
+        "message": "AI Resell Pro API v3.1 - Now with Real eBay Market Data! 🚀",
         "status": "healthy",
         "features": [
-            "Groq Llama 4 Scout analysis",
             "Real eBay completed listings analysis",
             "Market trend analysis with confidence scoring",
             "Profit calculations after eBay fees",
