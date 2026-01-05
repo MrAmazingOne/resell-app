@@ -919,22 +919,20 @@ async def shutdown_event():
 
 # ============= EBAY MARKETPLACE ACCOUNT DELETION ENDPOINT =============
 @app.post("/ebay/marketplace-account-deletion")
-async def marketplace_account_deletion(
+async def marketplace_account_deletion_post(
     request: Request,
     x_ebay_signature: str = Header(None),
     x_ebay_timestamp: str = Header(None)
 ):
     """
-    eBay Marketplace Account Deletion Endpoint
-    Required for GDPR/CCPA compliance
-    This MUST return 200 OK for verification to succeed
+    Handle eBay POST notifications for marketplace account deletion
     """
     try:
         # Get raw body
         body_bytes = await request.body()
         body_str = body_bytes.decode('utf-8')
         
-        logger.info(f"🔔 Received eBay marketplace account deletion request")
+        logger.info(f"🔔 Received eBay POST marketplace account deletion request")
         logger.info(f"📦 Headers: X-EBAY-Signature: {x_ebay_signature[:50] if x_ebay_signature else 'None'}...")
         logger.info(f"📦 Headers: X-EBAY-Timestamp: {x_ebay_timestamp}")
         
@@ -1005,6 +1003,36 @@ async def marketplace_account_deletion(
         return {
             "status": "error_acknowledged",
             "message": f"Error: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+# ADD THIS GET ENDPOINT FOR VERIFICATION
+@app.get("/ebay/marketplace-account-deletion")
+async def marketplace_account_deletion_get(challenge_code: Optional[str] = None):
+    """
+    Handle eBay GET verification requests
+    eBay sends a GET with challenge_code for verification
+    """
+    logger.info(f"🔔 Received eBay GET verification request")
+    logger.info(f"📦 Challenge code: {challenge_code}")
+    
+    if challenge_code:
+        logger.info(f"✅ eBay verification challenge received: {challenge_code}")
+        # Return the challenge code to prove we received it
+        return {
+            "status": "success",
+            "message": "Endpoint verification successful",
+            "challenge_received": challenge_code,
+            "verification": "complete",
+            "timestamp": datetime.now().isoformat()
+        }
+    else:
+        logger.info(f"📝 Regular GET request to endpoint")
+        return {
+            "status": "ready",
+            "message": "Marketplace account deletion endpoint is active",
+            "methods_supported": ["GET", "POST"],
+            "verification": "Send GET with challenge_code parameter to verify",
             "timestamp": datetime.now().isoformat()
         }
 
@@ -1149,7 +1177,7 @@ async def root():
             "job_status": "GET /job/{job_id}/status",
             "health": "GET /health",
             "ping": "GET /ping (keep-alive)",
-            "ebay_deletion": "POST /ebay/marketplace-account-deletion"
+            "ebay_deletion": "GET/POST /ebay/marketplace-account-deletion"
         }
     }
 
