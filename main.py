@@ -3,7 +3,7 @@
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from groq import Groq
 import os
 import json
@@ -950,7 +950,8 @@ async def get_ebay_auth_url():
             "response_type": "code",
             "redirect_uri": f"https://resell-app-bi47.onrender.com/ebay/oauth/callback",
             "scope": " ".join(scopes),
-            "state": str(uuid.uuid4())
+            "state": str(uuid.uuid4()),
+            "prompt": "login"  # Force login to see consent page
         }
         
         auth_url = f"{base_url}?{urllib.parse.urlencode(params)}"
@@ -1037,7 +1038,6 @@ async def exchange_code_for_token(authorization_code: str):
     try:
         app_id = os.getenv('EBAY_APP_ID')
         cert_id = os.getenv('EBAY_CERT_ID')
-        ru_name = os.getenv('EBAY_RU_NAME')
         
         if not app_id or not cert_id:
             raise Exception("eBay credentials not configured")
@@ -1088,6 +1088,345 @@ async def exchange_code_for_token(authorization_code: str):
 async def ebay_oauth_callback_alt(code: Optional[str] = None, error: Optional[str] = None, state: Optional[str] = None):
     """Alternative OAuth callback endpoint"""
     return await ebay_oauth_callback(code=code, error=error, state=state)
+
+@app.get("/ebay/auth", response_class=HTMLResponse)
+async def ebay_auth_page():
+    """HTML page for eBay authorization"""
+    update_activity()
+    
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>eBay Authorization - AI Resell Pro</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 600px;
+                margin: 50px auto;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .container {
+                background: white;
+                border-radius: 12px;
+                padding: 40px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                text-align: center;
+            }
+            h1 {
+                color: #333;
+                margin-bottom: 10px;
+            }
+            .subtitle {
+                color: #666;
+                margin-bottom: 30px;
+                font-size: 16px;
+            }
+            .auth-button {
+                display: inline-block;
+                background: #0064d2;
+                color: white;
+                text-decoration: none;
+                padding: 16px 32px;
+                border-radius: 8px;
+                font-size: 18px;
+                font-weight: bold;
+                margin: 20px 0;
+                transition: all 0.3s;
+                border: none;
+                cursor: pointer;
+            }
+            .auth-button:hover {
+                background: #0050a8;
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(0,100,210,0.3);
+            }
+            .instructions {
+                background: #f8f9fa;
+                border-left: 4px solid #0064d2;
+                padding: 15px;
+                margin: 20px 0;
+                text-align: left;
+                border-radius: 4px;
+            }
+            .step {
+                margin: 10px 0;
+                padding: 5px 0;
+            }
+            .status {
+                margin-top: 20px;
+                padding: 15px;
+                border-radius: 8px;
+                background: #e8f4fd;
+                border: 1px solid #b6d4fe;
+                display: none;
+            }
+            .error {
+                background: #fde8e8;
+                border: 1px solid #f5c6cb;
+            }
+            .success {
+                background: #d4edda;
+                border: 1px solid #c3e6cb;
+            }
+            .token-info {
+                background: #f8f9fa;
+                padding: 15px;
+                border-radius: 8px;
+                margin-top: 20px;
+                font-family: monospace;
+                font-size: 12px;
+                word-break: break-all;
+                text-align: left;
+                display: none;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔐 eBay Authorization</h1>
+            <div class="subtitle">AI Resell Pro needs access to your eBay account</div>
+            
+            <div class="instructions">
+                <div class="step">1. Click the button below to authorize with eBay</div>
+                <div class="step">2. Sign in to your eBay account (if not already signed in)</div>
+                <div class="step">3. Review and agree to the permissions</div>
+                <div class="step">4. You'll be redirected back to this app</div>
+            </div>
+            
+            <a href="/ebay/auth/url" class="auth-button" id="authButton">
+                Authorize with eBay
+            </a>
+            
+            <div id="status" class="status"></div>
+            
+            <script>
+                document.getElementById('authButton').addEventListener('click', async function(e) {
+                    e.preventDefault();
+                    const button = this;
+                    const statusDiv = document.getElementById('status');
+                    
+                    button.innerHTML = '⏳ Generating authorization URL...';
+                    button.disabled = true;
+                    statusDiv.style.display = 'block';
+                    statusDiv.className = 'status';
+                    statusDiv.innerHTML = 'Please wait...';
+                    
+                    try {
+                        const response = await fetch('/ebay/auth/url');
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            statusDiv.innerHTML = '✅ Authorization URL generated successfully! Redirecting to eBay...';
+                            statusDiv.className = 'status success';
+                            
+                            // Redirect to eBay after a brief delay
+                            setTimeout(() => {
+                                window.location.href = data.auth_url;
+                            }, 1000);
+                        } else {
+                            statusDiv.innerHTML = '❌ Failed to generate URL: ' + (data.message || 'Unknown error');
+                            statusDiv.className = 'status error';
+                            button.innerHTML = 'Try Again';
+                            button.disabled = false;
+                        }
+                    } catch (error) {
+                        statusDiv.innerHTML = '❌ Error: ' + error.message;
+                        statusDiv.className = 'status error';
+                        button.innerHTML = 'Try Again';
+                        button.disabled = false;
+                    }
+                });
+                
+                // Check URL parameters for OAuth callback result
+                const urlParams = new URLSearchParams(window.location.search);
+                const code = urlParams.get('code');
+                const error = urlParams.get('error');
+                
+                if (code) {
+                    document.getElementById('status').innerHTML = 
+                        '✅ Authorization successful! Processing token exchange...';
+                    document.getElementById('status').style.display = 'block';
+                    document.getElementById('status').className = 'status success';
+                    document.getElementById('authButton').style.display = 'none';
+                    
+                    // Exchange code for token
+                    fetch(`/ebay/oauth/callback?code=${code}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.status === 'success') {
+                                document.getElementById('status').innerHTML = 
+                                    '🎉 Authorization Complete!<br><br>' +
+                                    '✅ Access Token: ' + data.token_info.access_token.substring(0, 30) + '...<br>' +
+                                    '✅ Token Type: ' + data.token_info.token_type + '<br>' +
+                                    '✅ Expires in: ' + data.token_info.expires_in + ' seconds<br><br>' +
+                                    'You can now use the app with your eBay account.';
+                                    
+                                // Store token (in a real app, you'd send this to your server)
+                                if (data.token_info.access_token) {
+                                    localStorage.setItem('ebay_access_token', data.token_info.access_token);
+                                    localStorage.setItem('ebay_refresh_token', data.token_info.refresh_token || '');
+                                }
+                            } else {
+                                document.getElementById('status').innerHTML = 
+                                    '❌ Token exchange failed: ' + (data.message || 'Unknown error');
+                                document.getElementById('status').className = 'status error';
+                            }
+                        })
+                        .catch(error => {
+                            document.getElementById('status').innerHTML = 
+                                '❌ Error exchanging token: ' + error.message;
+                            document.getElementById('status').className = 'status error';
+                        });
+                }
+                
+                if (error) {
+                    document.getElementById('status').innerHTML = 
+                        '❌ Authorization failed: ' + error;
+                    document.getElementById('status').style.display = 'block';
+                    document.getElementById('status').className = 'status error';
+                }
+            </script>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
+
+@app.get("/ebay/auth/simple", response_class=HTMLResponse)
+async def ebay_auth_simple():
+    """Simple direct eBay authorization page"""
+    update_activity()
+    
+    # Get the auth URL directly
+    app_id = os.getenv('EBAY_APP_ID')
+    
+    if not app_id:
+        return HTMLResponse(content="<h1>Error: eBay App ID not configured</h1>")
+    
+    # Create the direct auth URL
+    scopes = [
+        "https://api.ebay.com/oauth/api_scope",
+        "https://api.ebay.com/oauth/api_scope/sell.inventory",
+        "https://api.ebay.com/oauth/api_scope/sell.marketing",
+        "https://api.ebay.com/oauth/api_scope/sell.account",
+        "https://api.ebay.com/oauth/api_scope/sell.fulfillment"
+    ]
+    
+    params = {
+        "client_id": app_id,
+        "response_type": "code",
+        "redirect_uri": "https://resell-app-bi47.onrender.com/ebay/oauth/callback",
+        "scope": " ".join(scopes),
+        "state": str(uuid.uuid4()),
+        "prompt": "login"
+    }
+    
+    auth_url = f"https://auth.ebay.com/oauth2/authorize?{urllib.parse.urlencode(params)}"
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Authorize eBay Access</title>
+        <meta http-equiv="refresh" content="2; url={auth_url}">
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                text-align: center;
+                padding: 50px;
+                background: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 40px;
+                border-radius: 10px;
+                box-shadow: 0 0 20px rgba(0,0,0,0.1);
+                display: inline-block;
+            }}
+            h1 {{
+                color: #0064d2;
+            }}
+            .spinner {{
+                border: 4px solid #f3f3f3;
+                border-top: 4px solid #0064d2;
+                border-radius: 50%;
+                width: 40px;
+                height: 40px;
+                animation: spin 2s linear infinite;
+                margin: 20px auto;
+            }}
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            .direct-link {{
+                display: block;
+                margin-top: 20px;
+                padding: 10px;
+                background: #0064d2;
+                color: white;
+                text-decoration: none;
+                border-radius: 5px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Redirecting to eBay...</h1>
+            <div class="spinner"></div>
+            <p>Please wait while we redirect you to eBay's authorization page.</p>
+            <p>If you are not redirected automatically, click the link below:</p>
+            <a href="{auth_url}" class="direct-link">Click here to authorize with eBay</a>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
+
+@app.post("/ebay/store-token")
+async def store_ebay_token(token_data: Dict[str, Any]):
+    """Store eBay OAuth token (for testing)"""
+    update_activity()
+    
+    try:
+        access_token = token_data.get('access_token')
+        refresh_token = token_data.get('refresh_token')
+        
+        if access_token:
+            logger.info(f"🔐 Received eBay access token: {access_token[:30]}...")
+            
+            # In production, you would store this in a database
+            # For now, we'll just log it and return success
+            
+            return {
+                "status": "success",
+                "message": "Token received (logged to server)",
+                "token_info": {
+                    "access_token_length": len(access_token),
+                    "refresh_token_available": bool(refresh_token),
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "No access token provided"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Token storage error: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 # ============= EBAY MARKETPLACE ACCOUNT DELETION ENDPOINT =============
 @app.post("/ebay/marketplace-account-deletion")
@@ -1352,7 +1691,9 @@ async def root():
             "health": "GET /health",
             "ping": "GET /ping (keep-alive)",
             "ebay_deletion": "GET/POST /ebay/marketplace-account-deletion",
-            "ebay_auth": "GET /ebay/auth/url (get authorization URL)",
+            "ebay_auth": "GET /ebay/auth (authorization page)",
+            "ebay_auth_simple": "GET /ebay/auth/simple (direct redirect)",
+            "ebay_auth_url": "GET /ebay/auth/url (JSON auth URL)",
             "ebay_callback": "GET /ebay/oauth/callback (OAuth callback)"
         }
     }
