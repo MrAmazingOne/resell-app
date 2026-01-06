@@ -51,7 +51,7 @@ class eBayOAuth:
         params = {
             "client_id": self.app_id,
             "response_type": "code",
-            "redirect_uri": "ai-resell-pro://ebay-auth",  # iOS app URL scheme
+            "redirect_uri": "https://resell-app-bi47.onrender.com/ebay/oauth/callback",  # iOS app URL scheme
             "scope": " ".join(scopes),
             "state": state,
             "prompt": "login"
@@ -76,7 +76,7 @@ class eBayOAuth:
             data = {
                 "grant_type": "authorization_code",
                 "code": authorization_code,
-                "redirect_uri": "ai-resell-pro://ebay-auth"
+                "redirect_uri": "https://resell-app-bi47.onrender.com/ebay/oauth/callback"
             }
             
             logger.info(f"Exchanging code for token: {authorization_code[:20]}...")
