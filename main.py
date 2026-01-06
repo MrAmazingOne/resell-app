@@ -1658,6 +1658,21 @@ async def health_check():
         ]
     }
 
+@app.get("/ebay/test-api")
+async def test_ebay_api():
+    """Test eBay API connection"""
+    update_activity()
+    
+    test_result = ebay_api.test_api_connection()
+    
+    return {
+        "status": test_result.get('status'),
+        "message": test_result.get('message'),
+        "app_id": test_result.get('app_id'),
+        "details": test_result,
+        "timestamp": datetime.now().isoformat()
+    }
+
 @app.get("/ping")
 async def ping():
     update_activity()

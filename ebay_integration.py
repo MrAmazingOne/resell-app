@@ -4,6 +4,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,57 @@ class eBayAPI:
         else:
             self.finding_base_url = "https://svcs.ebay.com/services/search/FindingService/v1"
             self.shopping_base_url = "https://open.api.ebay.com/shopping"
+        
+        # Rate limiting
+        self.last_request_time = 0
+        self.min_request_interval = 0.5  # 500ms between requests
+
+    def _rate_limit(self):
+        """Implement rate limiting for eBay API calls"""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        if time_since_last < self.min_request_interval:
+            sleep_time = self.min_request_interval - time_since_last
+            time.sleep(sleep_time)
+        
+        self.last_request_time = time.time()
+
+    def _make_finding_api_request(self, params: Dict) -> Optional[Dict]:
+        """Make a Finding API request with error handling"""
+        self._rate_limit()
+        
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔍 eBay Finding API request attempt {attempt + 1}/{max_retries}")
+                logger.info(f"   URL: {self.finding_base_url}")
+                logger.info(f"   Params: {json.dumps(params, indent=2)}")
+                
+                response = requests.get(self.finding_base_url, params=params, timeout=10)
+                logger.info(f"   Response status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    return response.json()
+                elif response.status_code == 500:
+                    logger.error(f"❌ eBay API 500 error on attempt {attempt + 1}: {response.text[:200]}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)  # Wait before retry
+                        continue
+                else:
+                    logger.error(f"❌ eBay API error {response.status_code}: {response.text[:200]}")
+                    return None
+                    
+            except requests.RequestException as e:
+                logger.error(f"❌ eBay API request error: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+            except Exception as e:
+                logger.error(f"❌ Unexpected error in eBay API request: {e}")
+                return None
+        
+        return None
 
     def optimize_search_keywords(self, keywords: str) -> str:
         """Optimize search keywords for eBay"""
@@ -119,26 +171,25 @@ class eBayAPI:
                 'RESPONSE-DATA-FORMAT': 'JSON',
                 'REST-PAYLOAD': '',
                 'keywords': keywords,
-                'paginationInput.entriesPerPage': min(max_results, 100),
-                'itemFilter(0).name': 'SoldItemsOnly',
-                'itemFilter(0).value': 'true',
-                'itemFilter(1).name': 'ListingType',
-                'itemFilter(1).value': 'FixedPrice',
+                'paginationInput.entriesPerPage': min(max_results, 50),  # Reduced from 100
                 'sortOrder': 'EndTimeSoonest'
             }
             
+            # Only add filters if we have valid params
             if category_id:
                 params['categoryId'] = category_id
             
-            response = requests.get(self.finding_base_url, params=params, timeout=10)
-            response.raise_for_status()
+            # Try without filters first (some filters might cause 500 errors)
+            response_data = self._make_finding_api_request(params)
             
-            data = response.json()
+            if not response_data:
+                # Try alternative approach with Shopping API
+                return self._search_with_shopping_api(keywords)
             
             # Parse the response
             items = []
-            if 'findCompletedItemsResponse' in data:
-                search_result = data['findCompletedItemsResponse'][0]
+            if 'findCompletedItemsResponse' in response_data:
+                search_result = response_data['findCompletedItemsResponse'][0]
                 if 'searchResult' in search_result and search_result['searchResult'][0]['@count'] != '0':
                     for item in search_result['searchResult'][0]['item']:
                         try:
@@ -171,12 +222,41 @@ class eBayAPI:
             logger.info(f"Found {len(items)} completed items for '{keywords}'")
             return items
             
-        except requests.RequestException as e:
-            logger.error(f"eBay Finding API Error: {e}")
-            return []
         except Exception as e:
             logger.error(f"Unexpected error in completed items search: {e}")
             return []
+
+    def _search_with_shopping_api(self, keywords: str) -> List[Dict]:
+        """Fallback search using Shopping API"""
+        try:
+            params = {
+                'callname': 'FindPopularItems',
+                'responseencoding': 'JSON',
+                'siteid': '0',
+                'version': '1157',
+                'appid': self.app_id,
+                'QueryKeywords': keywords[:50],
+                'MaxEntries': 10
+            }
+            
+            response = requests.get(self.shopping_base_url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                items = []
+                if 'ItemArray' in data and 'Item' in data['ItemArray']:
+                    for item in data['ItemArray']['Item']:
+                        items.append({
+                            'title': item.get('Title', ''),
+                            'price': float(item.get('CurrentPrice', {}).get('Value', 0)),
+                            'item_id': item.get('ItemID', ''),
+                            'gallery_url': item.get('GalleryURL', '')
+                        })
+                return items
+        except Exception as e:
+            logger.error(f"Shopping API fallback also failed: {e}")
+        
+        return []
 
     def get_current_listings(self, keywords: str, max_results: int = 10) -> List[Dict]:
         """
@@ -196,20 +276,18 @@ class eBayAPI:
                 'RESPONSE-DATA-FORMAT': 'JSON',
                 'REST-PAYLOAD': '',
                 'keywords': keywords,
-                'paginationInput.entriesPerPage': min(max_results, 100),
-                'itemFilter(0).name': 'ListingType',
-                'itemFilter(0).value': 'FixedPrice',
+                'paginationInput.entriesPerPage': min(max_results, 50),
                 'sortOrder': 'BestMatch'
             }
             
-            response = requests.get(self.finding_base_url, params=params, timeout=10)
-            response.raise_for_status()
+            response_data = self._make_finding_api_request(params)
             
-            data = response.json()
+            if not response_data:
+                return []
             
             items = []
-            if 'findItemsByKeywordsResponse' in data:
-                search_result = data['findItemsByKeywordsResponse'][0]
+            if 'findItemsByKeywordsResponse' in response_data:
+                search_result = response_data['findItemsByKeywordsResponse'][0]
                 if 'searchResult' in search_result and search_result['searchResult'][0]['@count'] != '0':
                     for item in search_result['searchResult'][0]['item']:
                         try:
@@ -224,7 +302,7 @@ class eBayAPI:
                                 'price': current_price,
                                 'condition': condition,
                                 'item_id': item['itemId'][0],
-                                'time_left': item['listingInfo'][0]['endTime'][0]
+                                'time_left': item['listingInfo'][0].get('endTime', [''])[0]
                             })
                         except (KeyError, IndexError, ValueError):
                             continue
@@ -241,8 +319,8 @@ class eBayAPI:
         """
         try:
             # Get completed (sold) items for pricing history
-            completed_items = self.search_completed_items(keywords, category_id, max_results=50)
-            current_items = self.get_current_listings(keywords, max_results=20)
+            completed_items = self.search_completed_items(keywords, category_id, max_results=30)
+            current_items = self.get_current_listings(keywords, max_results=15)
             
             if not completed_items:
                 return self._generate_estimated_analysis(keywords)
@@ -323,6 +401,34 @@ class eBayAPI:
         except Exception as e:
             logger.error(f"Category suggestions error: {e}")
             return [{'category_name': 'Collectibles', 'relevance': 1, 'category_id': '267'}]
+
+    def test_api_connection(self) -> Dict:
+        """Test eBay API connection"""
+        try:
+            # Test with a simple query
+            test_items = self.search_completed_items("test", max_results=1)
+            
+            if test_items is not None:
+                return {
+                    'status': 'success',
+                    'message': 'eBay API connection successful',
+                    'app_id': self.app_id[:10] + '...',
+                    'test_results': f'Found {len(test_items)} items'
+                }
+            else:
+                return {
+                    'status': 'error',
+                    'message': 'eBay API connection failed',
+                    'app_id': self.app_id[:10] + '...',
+                    'suggestion': 'Check eBay app permissions and rate limits'
+                }
+                
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': f'eBay API test failed: {str(e)}',
+                'app_id': self.app_id[:10] + '...'
+            }
 
 # Singleton instance
 ebay_api = eBayAPI(sandbox=False)
