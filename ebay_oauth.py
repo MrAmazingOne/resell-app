@@ -1,8 +1,3 @@
-[file name]: ebay_oauth.py
-[file content begin]
-"""
-eBay OAuth Authentication for iOS App
-"""
 import os
 import requests
 import json
@@ -206,4 +201,3 @@ class eBayOAuth:
 
 # Global instance
 ebay_oauth = eBayOAuth()
-[file content end]
