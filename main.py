@@ -3,7 +3,7 @@
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from groq import Groq
 import os
 import json
@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import asyncio
 import hmac
 import hashlib
+import urllib.parse
 
 # Load environment variables
 load_dotenv()
@@ -917,6 +918,177 @@ async def shutdown_event():
     job_executor.shutdown(wait=False)
     logger.info("🛑 Server shutting down")
 
+# ============= EBAY OAUTH ENDPOINTS =============
+
+@app.get("/ebay/auth/url")
+async def get_ebay_auth_url():
+    """Generate eBay OAuth authorization URL"""
+    update_activity()
+    
+    try:
+        # Get eBay credentials from environment
+        app_id = os.getenv('EBAY_APP_ID')
+        ru_name = os.getenv('EBAY_RU_NAME')
+        
+        if not app_id or not ru_name:
+            raise HTTPException(status_code=500, detail="eBay credentials not configured")
+        
+        # Production eBay OAuth URL
+        base_url = "https://auth.ebay.com/oauth2/authorize"
+        
+        # Required scopes for production
+        scopes = [
+            "https://api.ebay.com/oauth/api_scope",
+            "https://api.ebay.com/oauth/api_scope/sell.inventory",
+            "https://api.ebay.com/oauth/api_scope/sell.marketing",
+            "https://api.ebay.com/oauth/api_scope/sell.account",
+            "https://api.ebay.com/oauth/api_scope/sell.fulfillment"
+        ]
+        
+        params = {
+            "client_id": app_id,
+            "response_type": "code",
+            "redirect_uri": f"https://resell-app-bi47.onrender.com/ebay/oauth/callback",
+            "scope": " ".join(scopes),
+            "state": str(uuid.uuid4())
+        }
+        
+        auth_url = f"{base_url}?{urllib.parse.urlencode(params)}"
+        
+        logger.info(f"🔗 Generated eBay OAuth URL for app: {app_id}")
+        
+        return {
+            "status": "success",
+            "auth_url": auth_url,
+            "scopes": scopes,
+            "app_id": app_id[:10] + "...",
+            "ru_name": ru_name,
+            "redirect_uri": params["redirect_uri"],
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to generate eBay auth URL: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate auth URL: {str(e)}")
+
+@app.get("/ebay/oauth/callback")
+async def ebay_oauth_callback(code: Optional[str] = None, error: Optional[str] = None, state: Optional[str] = None):
+    """Handle eBay OAuth callback"""
+    update_activity()
+    
+    logger.info(f"🔔 eBay OAuth callback received. Code: {code is not None}, Error: {error}, State: {state}")
+    
+    if error:
+        logger.error(f"❌ eBay OAuth error: {error}")
+        return {
+            "status": "error",
+            "message": f"OAuth authorization failed: {error}",
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    if not code:
+        logger.error("❌ No authorization code received")
+        return {
+            "status": "error",
+            "message": "No authorization code received",
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    try:
+        logger.info(f"✅ Received OAuth code: {code[:20]}...")
+        
+        # Exchange code for token
+        token_response = await exchange_code_for_token(code)
+        
+        if token_response.get("access_token"):
+            logger.info("✅ Successfully obtained eBay OAuth token")
+            
+            return {
+                "status": "success",
+                "message": "eBay authorization successful! You can close this window.",
+                "code": code[:20] + "...",
+                "token_info": {
+                    "access_token": token_response["access_token"][:20] + "...",
+                    "expires_in": token_response.get("expires_in"),
+                    "token_type": token_response.get("token_type"),
+                    "refresh_token": token_response.get("refresh_token", "")[:20] + "..." if token_response.get("refresh_token") else None
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.error(f"❌ Failed to exchange code for token: {token_response}")
+            return {
+                "status": "error",
+                "message": "Failed to exchange authorization code for access token",
+                "details": token_response,
+                "timestamp": datetime.now().isoformat()
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ OAuth callback error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+async def exchange_code_for_token(authorization_code: str):
+    """Exchange authorization code for OAuth token"""
+    try:
+        app_id = os.getenv('EBAY_APP_ID')
+        cert_id = os.getenv('EBAY_CERT_ID')
+        ru_name = os.getenv('EBAY_RU_NAME')
+        
+        if not app_id or not cert_id:
+            raise Exception("eBay credentials not configured")
+        
+        # Production eBay token endpoint
+        token_url = "https://api.ebay.com/identity/v1/oauth2/token"
+        
+        # Prepare request headers and body
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {base64.b64encode(f'{app_id}:{cert_id}'.encode()).decode()}"
+        }
+        
+        data = {
+            "grant_type": "authorization_code",
+            "code": authorization_code,
+            "redirect_uri": f"https://resell-app-bi47.onrender.com/ebay/oauth/callback"
+        }
+        
+        logger.info(f"🔄 Exchanging code for token with app_id: {app_id[:10]}...")
+        
+        response = requests.post(token_url, headers=headers, data=data, timeout=30)
+        
+        logger.info(f"🔁 Token exchange response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            token_data = response.json()
+            logger.info(f"✅ Token exchange successful. Token type: {token_data.get('token_type')}")
+            
+            # Store the token (in production, you'd store this in a database)
+            # For now, we'll just log it
+            if token_data.get("access_token"):
+                logger.info(f"🔐 Access token obtained: {token_data['access_token'][:20]}...")
+            
+            return token_data
+        else:
+            logger.error(f"❌ Token exchange failed: {response.status_code} - {response.text}")
+            return {
+                "error": f"Token exchange failed: {response.status_code}",
+                "details": response.text[:200]
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Token exchange error: {e}")
+        return {"error": str(e)}
+
+@app.get("/auth/ebay/callback")
+async def ebay_oauth_callback_alt(code: Optional[str] = None, error: Optional[str] = None, state: Optional[str] = None):
+    """Alternative OAuth callback endpoint"""
+    return await ebay_oauth_callback(code=code, error=error, state=state)
+
 # ============= EBAY MARKETPLACE ACCOUNT DELETION ENDPOINT =============
 @app.post("/ebay/marketplace-account-deletion")
 async def marketplace_account_deletion_post(
@@ -1036,53 +1208,6 @@ async def marketplace_account_deletion_get(challenge_code: Optional[str] = None)
             "timestamp": datetime.now().isoformat()
         }
 
-# ============= EBAY OAUTH CALLBACK ENDPOINTS =============
-@app.get("/ebay/oauth/callback")
-async def ebay_oauth_callback(code: Optional[str] = None, error: Optional[str] = None):
-    """Handle eBay OAuth callback"""
-    update_activity()
-    
-    if error:
-        logger.error(f"❌ eBay OAuth error: {error}")
-        return {
-            "status": "error",
-            "message": f"OAuth authorization failed: {error}",
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    if not code:
-        logger.error("❌ No authorization code received")
-        return {
-            "status": "error",
-            "message": "No authorization code received",
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    try:
-        # Exchange code for token (you'll implement this next)
-        logger.info(f"✅ Received OAuth code: {code[:20]}...")
-        
-        return {
-            "status": "success",
-            "message": "Authorization successful! You can close this window.",
-            "code": code[:20] + "...",
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ OAuth callback error: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-# Also add an alternative endpoint
-@app.get("/auth/ebay/callback")
-async def ebay_oauth_callback_alt(code: Optional[str] = None, error: Optional[str] = None):
-    """Alternative OAuth callback endpoint"""
-    return await ebay_oauth_callback(code=code, error=error)
-
 # ============= MAIN ENDPOINTS =============
 @app.post("/upload_item/")
 async def create_upload_file(
@@ -1189,7 +1314,8 @@ async def health_check():
             "Smart eBay search query generation",
             "Intelligent market analysis",
             "Job queue for timeout protection",
-            "eBay marketplace account deletion endpoint"
+            "eBay marketplace account deletion endpoint",
+            "eBay OAuth authorization endpoints"
         ]
     }
 
@@ -1216,7 +1342,8 @@ async def root():
             "Smart eBay search optimization",
             "Comprehensive market analysis",
             "Intelligent fallback guidance",
-            "GDPR/CCPA compliance endpoint"
+            "GDPR/CCPA compliance endpoint",
+            "eBay OAuth authentication"
         ],
         "timeout_protection": "25s processing window (Render: 30s)",
         "endpoints": {
@@ -1224,7 +1351,9 @@ async def root():
             "job_status": "GET /job/{job_id}/status",
             "health": "GET /health",
             "ping": "GET /ping (keep-alive)",
-            "ebay_deletion": "GET/POST /ebay/marketplace-account-deletion"
+            "ebay_deletion": "GET/POST /ebay/marketplace-account-deletion",
+            "ebay_auth": "GET /ebay/auth/url (get authorization URL)",
+            "ebay_callback": "GET /ebay/oauth/callback (OAuth callback)"
         }
     }
 
