@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 class eBayAPI:
-    def __init__(self, sandbox=True):
+    def __init__(self, sandbox=False):
         self.sandbox = sandbox
         self.app_id = os.getenv('EBAY_APP_ID')
         self.dev_id = os.getenv('EBAY_DEV_ID')  
@@ -325,4 +325,4 @@ class eBayAPI:
             return [{'category_name': 'Collectibles', 'relevance': 1, 'category_id': '267'}]
 
 # Singleton instance
-ebay_api = eBayAPI(sandbox=True)
+ebay_api = eBayAPI(sandbox=False)

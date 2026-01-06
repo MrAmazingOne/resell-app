@@ -1036,6 +1036,53 @@ async def marketplace_account_deletion_get(challenge_code: Optional[str] = None)
             "timestamp": datetime.now().isoformat()
         }
 
+# ============= EBAY OAUTH CALLBACK ENDPOINTS =============
+@app.get("/ebay/oauth/callback")
+async def ebay_oauth_callback(code: Optional[str] = None, error: Optional[str] = None):
+    """Handle eBay OAuth callback"""
+    update_activity()
+    
+    if error:
+        logger.error(f"❌ eBay OAuth error: {error}")
+        return {
+            "status": "error",
+            "message": f"OAuth authorization failed: {error}",
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    if not code:
+        logger.error("❌ No authorization code received")
+        return {
+            "status": "error",
+            "message": "No authorization code received",
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    try:
+        # Exchange code for token (you'll implement this next)
+        logger.info(f"✅ Received OAuth code: {code[:20]}...")
+        
+        return {
+            "status": "success",
+            "message": "Authorization successful! You can close this window.",
+            "code": code[:20] + "...",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ OAuth callback error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+# Also add an alternative endpoint
+@app.get("/auth/ebay/callback")
+async def ebay_oauth_callback_alt(code: Optional[str] = None, error: Optional[str] = None):
+    """Alternative OAuth callback endpoint"""
+    return await ebay_oauth_callback(code=code, error=error)
+
 # ============= MAIN ENDPOINTS =============
 @app.post("/upload_item/")
 async def create_upload_file(
