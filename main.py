@@ -92,12 +92,10 @@ def get_ebay_token() -> Optional[str]:
     global EBAY_AUTH_TOKEN
     
     with EBAY_TOKEN_LOCK:
-        # Check if we have a token stored
         if EBAY_AUTH_TOKEN:
             logger.debug(f"🔑 Using stored eBay token: {EBAY_AUTH_TOKEN[:20]}...")
             return EBAY_AUTH_TOKEN
         
-        # Try to load from environment variable
         token = os.getenv('EBAY_AUTH_TOKEN')
         if token:
             logger.info(f"🔑 Loaded eBay token from env: {token[:20]}...")
@@ -114,7 +112,6 @@ def store_ebay_token(token: str):
     with EBAY_TOKEN_LOCK:
         EBAY_AUTH_TOKEN = token
         logger.info(f"🔑 Stored new eBay token: {token[:20]}...")
-
 def refresh_ebay_token_if_needed(token_id: str) -> bool:
     """Refresh eBay token if it's expired"""
     try:
@@ -126,7 +123,7 @@ def refresh_ebay_token_if_needed(token_id: str) -> bool:
         expires_at = datetime.fromisoformat(token_data["expires_at"])
         time_remaining = expires_at - datetime.now()
         
-        if time_remaining.total_seconds() < 300:  # Less than 5 minutes remaining
+        if time_remaining.total_seconds() < 300:
             logger.info("🔄 Token expiring soon, attempting refresh...")
             if "refresh_token" in token_data:
                 refreshed = ebay_oauth.refresh_token(token_data["refresh_token"])
@@ -189,7 +186,6 @@ Return analysis in JSON format:
   "category": "Primary eBay category (based on analysis)",
   "ebay_specific_tips": ["Photography tips", "Listing optimization", "Timing advice", "Keyword strategies"],
   
-  // Extended details - FILL EVERYTHING POSSIBLE
   "brand": "Exact brand if visible, otherwise 'Unknown - appears to be [quality/style]'",
   "model": "Model number/name if visible, otherwise descriptive characteristics", 
   "year": "Production year if determinable, otherwise era/style indicators",
@@ -209,39 +205,6 @@ IMPORTANT: Return ONLY valid JSON, no additional text or explanations.
 ALWAYS provide actionable insights, NEVER empty or generic responses.
 """
 
-def clean_model_string(model: str) -> str:
-    """Clean model string for better search results"""
-    if not model:
-        return ""
-    
-    # Remove generic/unhelpful words
-    generic_words = [
-        'model', 'version', 'series', 'edition', 'type', 'style',
-        'unknown', 'not specified', 'not available', 'n/a', 'none',
-        'comfortable', 'playing', 'experience', 'finish', 'exterior',
-        'interior', 'condition', 'restored', 'black', 'blue', 'teal',
-        'glossy', 'matte', 'vintage', 'antique', 'used', 'new',
-        'excellent', 'good', 'fair', 'poor', 'working', 'non-working',
-        'functional', 'non-functional', 'complete', 'incomplete',
-        'partial', 'whole', 'damaged', 'undamaged', 'scratch', 'dent',
-        'crack', 'chip', 'stain', 'tear', 'rip', 'hole', 'missing',
-        'present', 'available', 'unavailable', 'visible', 'invisible',
-        'clear', 'unclear', 'legible', 'illegible', 'readable', 'unreadable'
-    ]
-    
-    words = model.split()
-    cleaned_words = []
-    
-    for word in words:
-        word_lower = word.lower()
-        # Keep if not generic and has reasonable length
-        if (word_lower not in generic_words and 
-            len(word) > 2 and 
-            not word.isdigit() or (word.isdigit() and len(word) in [2, 3, 4])):  # Keep years and model numbers
-            cleaned_words.append(word)
-    
-    return ' '.join(cleaned_words[:3])  # Keep only most important terms
-
 def map_to_ebay_category(category: str) -> str:
     """Map internal category to eBay search-friendly category"""
     category_mapping = {
@@ -256,6 +219,7 @@ def map_to_ebay_category(category: str) -> str:
         'tools': 'tools',
         'kitchen': 'kitchen',
         'vehicles': 'cars trucks',
+        'automotive': 'cars trucks',  # NEW: Map automotive to vehicles
         'music': 'musical instruments',
         'art': 'art',
         'coins': 'coins',
@@ -264,98 +228,14 @@ def map_to_ebay_category(category: str) -> str:
     
     return category_mapping.get(category.lower(), '')
 
-def get_most_specific_feature(features: List[str]) -> str:
-    """Extract the most specific/detailed feature"""
-    if not features:
-        return ""
-    
-    # Score features by specificity
-    scored_features = []
-    for feature in features:
-        words = feature.split()
-        score = len(words) * 10
-        if any(word.isdigit() for word in words):
-            score += 20
-        if len(feature) > 15:
-            score += 15
-        scored_features.append((feature, score))
-    
-    scored_features.sort(key=lambda x: x[1], reverse=True)
-    return scored_features[0][0] if scored_features else ""
-
-def extract_search_terms_from_title(title: str) -> List[str]:
-    """Extract key search terms from title"""
-    if not title:
-        return []
-    
-    # Common words to exclude
-    stop_words = {
-        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to',
-        'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be',
-        'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
-        'will', 'would', 'shall', 'should', 'may', 'might', 'must',
-        'can', 'could'
-    }
-    
-    # Extract meaningful words
-    words = title.lower().split()
-    meaningful_words = []
-    
-    for word in words:
-        word = word.strip('.,!?;:"\'()[]{}<>')
-        
-        if (word not in stop_words and 
-            len(word) > 2 and 
-            any(c.isalpha() for c in word)):
-            
-            # Check for year patterns
-            if word.isdigit() and len(word) == 4:
-                year = int(word)
-                if 1900 <= year <= 2100:
-                    meaningful_words.append(word)
-                    continue
-            
-            # Check for model numbers/patterns
-            if any(c.isdigit() for c in word) and any(c.isalpha() for c in word):
-                meaningful_words.append(word)
-                continue
-            
-            # Check for common product terms
-            if word in ['piano', 'guitar', 'violin', 'drum', 'trumpet', 
-                       'truck', 'car', 'vehicle', 'motorcycle', 'bicycle',
-                       'watch', 'ring', 'necklace', 'bracelet', 'earring',
-                       'painting', 'sculpture', 'statue', 'figure', 'doll',
-                       'book', 'comic', 'magazine', 'newspaper', 'document',
-                       'coin', 'stamp', 'card', 'ticket', 'token', 'medal']:
-                meaningful_words.append(word)
-                continue
-            
-            # Add if it seems like a brand or model
-            if word[0].isupper() or word.isupper():
-                meaningful_words.append(word)
-    
-    # Remove duplicates
-    seen = set()
-    unique_words = []
-    for word in meaningful_words:
-        if word not in seen:
-            seen.add(word)
-            unique_words.append(word)
-    
-    return unique_words[:5]
-
 def clean_search_query(query: str) -> str:
     """Clean and optimize search query for eBay"""
     if not query:
         return ""
     
-    # Remove extra spaces
     query = ' '.join(query.split())
-    
-    # Remove problematic characters
     query = query.replace('"', '').replace("'", "").replace("`", "")
     
-    # Ensure query isn't too long
     if len(query) > 100:
         words = query.split()
         important_words = []
@@ -372,65 +252,56 @@ def clean_search_query(query: str) -> str:
     
     return query
 
-def remove_duplicate_items(items: List[Dict]) -> List[Dict]:
-    """Remove duplicate items from results"""
-    if not items:
-        return []
-    
-    unique_items = []
-    seen_ids = set()
-    
-    for item in items:
-        item_id = item.get('item_id', '')
-        if item_id and item_id not in seen_ids:
-            seen_ids.add(item_id)
-            unique_items.append(item)
-    
-    return unique_items
-
 def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
-    """MAXIMUM accuracy category detection using ALL available data"""
+    """
+    MAXIMUM accuracy category detection using ALL available data
+    🚨 FIXED: Better vehicle/automotive detection
+    """
     title_lower = title.lower()
     description_lower = description.lower()
     
-    # Combine vision analysis data
     detected_text = " ".join(vision_analysis.get('detected_text', []))
     detected_objects = " ".join(vision_analysis.get('detected_objects', []))
     brands = " ".join(vision_analysis.get('potential_brands', []))
     
     all_text = f"{title_lower} {description_lower} {detected_text.lower()} {detected_objects.lower()} {brands.lower()}"
     
+    # 🚨 CRITICAL: Vehicle keywords must be checked FIRST and STRICTLY
+    vehicle_keywords = [
+        "truck", "car", "vehicle", "automobile", "auto", "pickup", "sedan", "suv", 
+        "van", "coupe", "convertible", "wagon", "jeep", "bus", "trailer", "rv",
+        "chevrolet", "chevy", "ford", "toyota", "honda", "dodge", "gmc", "ram",
+        "motorcycle", "bike", "scooter", "atv", "utv", "snowmobile", "boat"
+    ]
+    
+    # 🚨 CHECK FOR VEHICLES FIRST (highest priority)
+    for keyword in vehicle_keywords:
+        if keyword in all_text:
+            logger.info(f"🚗 VEHICLE DETECTED: Found '{keyword}' in text")
+            return "vehicles"
+    
+    # 🚨 SPECIAL CASE: Check for year + automotive brand combinations
+    automotive_brands = ["chevrolet", "chevy", "ford", "toyota", "honda", "dodge", "gmc", "ram", "jeep"]
+    year_pattern = r'\b(19[5-9]\d|20[0-2]\d)\b'
+    
+    if re.search(year_pattern, all_text):
+        for brand in automotive_brands:
+            if brand in all_text:
+                logger.info(f"🚗 VEHICLE DETECTED: Found year + '{brand}' brand")
+                return "vehicles"
+    
+    # Now check other categories
     category_keywords = {
-        "electronics": ["electronic", "computer", "phone", "tablet", "camera", "laptop", "charger", "battery", 
-                       "screen", "iphone", "samsung", "android", "macbook", "ipad", "headphones", "speaker",
-                       "usb", "charger", "power", "cable", "wire", "circuit", "chip", "processor", "memory"],
-        "clothing": ["shirt", "pants", "dress", "jacket", "shoe", "sweater", "fabric", "cotton", "wool", 
-                    "leather", "silk", "polyester", "nike", "adidas", "levi", "gucci", "prada", "lv", 
-                    "sneaker", "boot", "hat", "cap", "glove", "sock", "underwear", "bra", "lingerie"],
-        "furniture": ["chair", "table", "desk", "cabinet", "sofa", "couch", "wood", "furniture", "drawer", 
-                     "shelf", "bed", "dresser", "wardrobe", "ottoman", "recliner", "stool", "bench",
-                     "wooden", "metal", "glass", "upholstery", "cushion", "leg", "armrest", "backrest"],
-        "collectibles": ["collectible", "rare", "vintage", "antique", "edition", "limited", "signed", 
-                        "autograph", "memorabilia", "coin", "stamp", "trading card", "funko", "figure",
-                        "collector", "series", "numbered", "certificate", "authenticity", "display"],
-        "books": ["book", "novel", "author", "page", "edition", "publish", "hardcover", "paperback", 
-                 "literature", "comic", "manga", "textbook", "pages", "chapter", "cover", "binding",
-                 "signed", "first edition", "rare book", "manuscript", "document"],
-        "toys": ["toy", "game", "play", "action figure", "doll", "puzzle", "lego", "model kit", 
-                "collectible figure", "barbie", "hot wheels", "board game", "video game", "console",
-                "playset", "vehicle", "character", "plush", "stuffed animal", "educational"],
-        "jewelry": ["ring", "necklace", "bracelet", "earring", "watch", "gold", "silver", "diamond",
-                   "gem", "stone", "pearl", "platinum", "titanium", "jewelry", "pendant", "brooch",
-                   "crystal", "bead", "chain", "clasp", "setting", "karat", "carat"],
-        "sports": ["sport", "equipment", "ball", "bat", "racket", "club", "ski", "snowboard", "bike",
-                  "bicycle", "fitness", "exercise", "weight", "dumbbell", "yoga", "mat", "helmet",
-                  "glove", "pad", "uniform", "jersey", "cleat", "shoe", "accessory"],
-        "tools": ["tool", "wrench", "hammer", "screwdriver", "drill", "saw", "pliers", "level", "tape",
-                 "measure", "workshop", "garage", "diy", "hardware", "fastener", "nail", "screw",
-                 "bolt", "nut", "machine", "equipment", "power tool", "hand tool"],
-        "kitchen": ["kitchen", "cookware", "utensil", "pan", "pot", "knife", "fork", "spoon", "plate",
-                   "bowl", "cup", "glass", "appliance", "mixer", "blender", "toaster", "microwave",
-                   "oven", "stove", "refrigerator", "freezer", "dish", "serving", "storage"]
+        "electronics": ["electronic", "computer", "phone", "tablet", "camera", "laptop"],
+        "clothing": ["shirt", "pants", "dress", "jacket", "shoe", "sneaker"],
+        "furniture": ["chair", "table", "desk", "cabinet", "sofa", "couch"],
+        "collectibles": ["collectible", "rare", "vintage", "antique", "limited"],
+        "books": ["book", "novel", "author", "page", "edition"],
+        "toys": ["toy", "game", "play", "action figure", "doll"],
+        "jewelry": ["ring", "necklace", "bracelet", "earring", "watch", "gold"],
+        "sports": ["sport", "equipment", "ball", "bat", "fitness"],
+        "tools": ["tool", "wrench", "hammer", "screwdriver", "drill"],
+        "kitchen": ["kitchen", "cookware", "pan", "pot", "appliance"]
     }
     
     scores = {category: 0 for category in category_keywords}
@@ -441,13 +312,125 @@ def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
             if keyword in all_text:
                 scores[category] += 1
     
-    # Boost score for brand matches in specific categories
-    if any(brand in all_text for brand in ["nike", "adidas", "gucci", "prada", "lv"]):
-        scores["clothing"] += 5
-    if any(brand in all_text for brand in ["apple", "samsung", "sony", "canon", "nikon"]):
-        scores["electronics"] += 5
+    detected_category = max(scores.items(), key=lambda x: x[1])[0]
+    logger.info(f"📦 CATEGORY DETECTION: '{detected_category}'")
     
-    return max(scores.items(), key=lambda x: x[1])[0]
+    return detected_category
+
+def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
+    """Extract structured keywords from user input"""
+    if not user_text:
+        return {}
+    
+    user_text = user_text.lower()
+    
+    # Extract year patterns (1900-2025)
+    year_pattern = r'\b(19[5-9]\d|20[0-2]\d)\b'
+    years = re.findall(year_pattern, user_text)
+    
+    # Extract potential brand names
+    brands = []
+    common_brands = [
+        # Automotive
+        'chevy', 'chevrolet', 'ford', 'toyota', 'honda', 'bmw', 'mercedes', 'benz',
+        'dodge', 'jeep', 'gmc', 'cadillac', 'buick', 'pontiac', 'ram', 'chrysler',
+        'nissan', 'subaru', 'mazda', 'volkswagen', 'vw', 'audi', 'volvo', 'tesla',
+        'porsche', 'ferrari', 'lamborghini', 'jaguar', 'land rover', 'mini',
+        # General brands
+        'apple', 'samsung', 'sony', 'microsoft', 'google', 'nike', 'adidas', 'gucci',
+        'prada', 'louis vuitton', 'lv', 'rolex', 'omega', 'canon', 'nikon'
+    ]
+    
+    for brand in common_brands:
+        if brand in user_text:
+            if brand == 'chevy':
+                brands.append('Chevrolet')
+            elif brand == 'vw':
+                brands.append('Volkswagen')
+            elif brand == 'benz':
+                brands.append('Mercedes-Benz')
+            elif brand == 'lv':
+                brands.append('Louis Vuitton')
+            else:
+                brands.append(brand.title())
+    
+    # Extract model indicators and specific features
+    models = []
+    features = []
+    
+    model_keywords = [
+        'truck', 'pickup', 'pick-up', 'sedan', 'coupe', 'convertible', 'suv', 'van',
+        'window', '5-window', '5 window', 'deluxe', 'custom', 'standard', 'limited',
+        'premium', 'luxury', 'sport', 'performance', 'edition', 'series', 'model'
+    ]
+    
+    for keyword in model_keywords:
+        if keyword in user_text:
+            if keyword in ['window', '5-window', '5 window', 'deluxe', 'custom', 'standard']:
+                features.append(keyword)
+            else:
+                models.append(keyword)
+    
+    # Remove duplicates
+    def deduplicate(lst):
+        seen = set()
+        result = []
+        for item in lst:
+            item_lower = item.lower()
+            if item_lower not in seen:
+                seen.add(item_lower)
+                result.append(item)
+        return result
+    
+    brands = deduplicate(brands)
+    models = deduplicate(models)
+    features = deduplicate(features)
+    
+    logger.info(f"📋 Extracted keywords: years={years}, brands={brands}, models={models}, features={features}")
+    
+    return {
+        'years': years,
+        'brands': brands,
+        'models': models,
+        'features': features
+    }
+
+def parse_json_response(response_text: str) -> List[Dict]:
+    """Robust JSON parsing for maximum accuracy"""
+    try:
+        json_text = response_text.strip()
+        
+        if "```json" in json_text:
+            json_start = json_text.find("```json") + 7
+            json_end = json_text.find("```", json_start)
+            json_text = json_text[json_start:json_end].strip()
+        elif "```" in json_text:
+            json_start = json_text.find("```") + 3
+            json_end = json_text.rfind("```")
+            json_text = json_text[json_start:json_end].strip()
+        
+        json_match = re.search(r'(\{.*\}|\[.*\])', json_text, re.DOTALL)
+        if json_match:
+            json_text = json_match.group(1)
+        
+        json_text = re.sub(r',\s*([}\]])', r'\1', json_text)
+        
+        parsed_data = json.loads(json_text)
+        
+        if isinstance(parsed_data, dict):
+            return [parsed_data]
+        elif isinstance(parsed_data, list):
+            return parsed_data
+        else:
+            logger.warning(f"Unexpected JSON format: {type(parsed_data)}")
+            return []
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing failed at line {e.lineno}, column {e.colno}: {e.msg}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error in JSON parsing: {e}")
+        return []
 
 class EnhancedAppItem:
     def __init__(self, data: Dict[str, Any]):
@@ -496,186 +479,16 @@ class EnhancedAppItem:
             "additional_info_needed": self.additional_info_needed
         }
 
-def parse_json_response(response_text: str) -> List[Dict]:
-    """Robust JSON parsing for maximum accuracy"""
-    try:
-        json_text = response_text.strip()
-        
-        # Clean up JSON response while preserving all content
-        if "```json" in json_text:
-            json_start = json_text.find("```json") + 7
-            json_end = json_text.find("```", json_start)
-            json_text = json_text[json_start:json_end].strip()
-        elif "```" in json_text:
-            json_start = json_text.find("```") + 3
-            json_end = json_text.rfind("```")
-            json_text = json_text[json_start:json_end].strip()
-        
-        # Try to find JSON object or array
-        json_match = re.search(r'(\{.*\}|\[.*\])', json_text, re.DOTALL)
-        if json_match:
-            json_text = json_match.group(1)
-        
-        # Remove any trailing commas before closing brackets/braces
-        json_text = re.sub(r',\s*([}\]])', r'\1', json_text)
-        
-        # Try to parse
-        parsed_data = json.loads(json_text)
-        
-        # Ensure we always return a list of dictionaries
-        if isinstance(parsed_data, dict):
-            return [parsed_data]
-        elif isinstance(parsed_data, list):
-            return parsed_data
-        else:
-            logger.warning(f"Unexpected JSON format: {type(parsed_data)}")
-            return []
-            
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing failed at line {e.lineno}, column {e.colno}: {e.msg}")
-        logger.error(f"JSON snippet near error: {json_text[max(0, e.pos-50):min(len(json_text), e.pos+50)]}")
-        
-        # Try to fix common JSON issues
-        try:
-            # Fix unescaped quotes
-            json_text = re.sub(r'(?<!\\)"', r'\"', json_text)
-            # Fix trailing commas
-            json_text = re.sub(r',\s*([}\]])', r'\1', json_text)
-            # Fix missing quotes around keys
-            json_text = re.sub(r'(\w+):', r'"\1":', json_text)
-            
-            parsed_data = json.loads(json_text)
-            if isinstance(parsed_data, dict):
-                return [parsed_data]
-            elif isinstance(parsed_data, list):
-                return parsed_data
-        except:
-            pass
-            
-        # Last resort: Return a fallback response
-        logger.error(f"Failed to parse JSON after fixes. Original text: {response_text[:500]}...")
-        return []
-    except Exception as e:
-        logger.error(f"Unexpected error in JSON parsing: {e}")
-        return []
-
-def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
-    """Extract structured keywords from user input"""
-    if not user_text:
-        return {}
-    
-    user_text = user_text.lower()
-    
-    # Extract year patterns (1900-2025)
-    year_pattern = r'\b(19[5-9]\d|20[0-2]\d)\b'
-    years = re.findall(year_pattern, user_text)
-    
-    # Extract potential brand names (common automotive brands and general brands)
-    brands = []
-    common_brands = [
-        # Automotive
-        'chevy', 'chevrolet', 'ford', 'toyota', 'honda', 'bmw', 'mercedes', 'benz',
-        'dodge', 'jeep', 'gmc', 'cadillac', 'buick', 'pontiac', 'ram', 'chrysler',
-        'nissan', 'subaru', 'mazda', 'volkswagen', 'vw', 'audi', 'volvo', 'tesla',
-        'porsche', 'ferrari', 'lamborghini', 'jaguar', 'land rover', 'mini',
-        'fiat', 'alfa romeo', 'maserati', 'bentley', 'rolls royce',
-        
-        # General brands
-        'apple', 'samsung', 'sony', 'microsoft', 'google', 'nike', 'adidas', 'gucci',
-        'prada', 'louis vuitton', 'lv', 'rolex', 'omega', 'canon', 'nikon', 'dell',
-        'hp', 'lenovo', 'lg', 'bosch', 'makita', 'dewalt', 'stanley', 'black decker',
-        'kitchenaid', 'whirlpool', 'maytag', 'kenmore', 'sears', 'craftsman'
-    ]
-    
-    for brand in common_brands:
-        if brand in user_text:
-            # Capitalize brand names properly
-            if brand == 'chevy':
-                brands.append('Chevrolet')
-            elif brand == 'vw':
-                brands.append('Volkswagen')
-            elif brand == 'benz':
-                brands.append('Mercedes-Benz')
-            elif brand == 'lv':
-                brands.append('Louis Vuitton')
-            else:
-                brands.append(brand.title())
-    
-    # Extract model indicators and specific features
-    models = []
-    features = []
-    
-    # Model/feature keywords
-    model_keywords = [
-        'truck', 'pickup', 'pick-up', 'sedan', 'coupe', 'convertible', 'suv', 'van',
-        'window', '5-window', '5 window', 'deluxe', 'custom', 'standard', 'limited',
-        'premium', 'luxury', 'sport', 'performance', 'edition', 'series', 'model',
-        'station wagon', 'wagon', 'hatchback', 'roadster', 'cabriolet', 'spyder'
-    ]
-    
-    for keyword in model_keywords:
-        if keyword in user_text:
-            if keyword in ['window', '5-window', '5 window', 'deluxe', 'custom', 'standard']:
-                features.append(keyword)
-            else:
-                models.append(keyword)
-    
-    # Extract specific features from the text
-    feature_words = user_text.split()
-    automotive_features = [
-        'v8', 'v6', 'v12', 'v10', 'inline', 'straight', 'automatic', 'manual',
-        'diesel', 'gas', 'electric', 'hybrid', 'plug-in', 'restored', 'original',
-        'customized', 'modified', 'rare', 'collectible', 'vintage', 'antique',
-        'classic', 'muscle', 'resto-mod', 'patina', 'barn find', 'survivor'
-    ]
-    
-    for word in feature_words:
-        word_lower = word.lower().strip('.,!?;:"\'()[]{}<>')
-        if len(word_lower) > 2:
-            # Check for automotive features
-            if word_lower in automotive_features:
-                if word_lower not in [f.lower() for f in features]:
-                    features.append(word_lower)
-            # Check for numeric features (engine size, etc.)
-            elif re.match(r'^\d+\.?\d*[Ll]?$', word_lower):
-                features.append(word_lower)
-    
-    # Remove duplicates while preserving order
-    def deduplicate(lst):
-        seen = set()
-        result = []
-        for item in lst:
-            item_lower = item.lower()
-            if item_lower not in seen:
-                seen.add(item_lower)
-                result.append(item)
-        return result
-    
-    brands = deduplicate(brands)
-    models = deduplicate(models)
-    features = deduplicate(features)
-    
-    logger.info(f"📋 Extracted keywords: years={years}, brands={brands}, models={models}, features={features}")
-    
-    return {
-        'years': years,
-        'brands': brands,
-        'models': models,
-        'features': features
-    }
-
 def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) -> str:
     """MAXIMUM accuracy Groq API call with JSON formatting instructions"""
     if not groq_client:
         raise Exception("Groq client not configured")
     
-    # Add explicit JSON formatting instructions to the prompt
     json_format_prompt = prompt + "\n\n**IMPORTANT: Return ONLY valid JSON. Do not include any explanatory text, code fences, or markdown outside the JSON.**"
     
     messages = []
     
     if image_base64 and mime_type:
-        # Clean base64 string
         if image_base64.startswith('data:'):
             parts = image_base64.split(',', 1)
             if len(parts) > 1:
@@ -703,12 +516,12 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         response = groq_client.chat.completions.create(
             model=groq_model,
             messages=messages,
-            temperature=0.1,  # Low temperature for consistent results
-            max_tokens=4000,  # Full token allowance for detailed analysis
+            temperature=0.1,
+            max_tokens=4000,
             top_p=0.95,
             stream=False,
-            timeout=15.0,  # Reasonable timeout
-            response_format={"type": "json_object"}  # Request JSON format
+            timeout=15.0,
+            response_format={"type": "json_object"}
         )
         
         if response.choices and len(response.choices) > 0:
@@ -773,7 +586,7 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
                 return items
         elif response.status_code == 401:
             logger.error("❌ eBay token expired or invalid")
-            store_ebay_token(None)  # Clear invalid token
+            store_ebay_token(None)
             return []
         elif response.status_code == 429:
             logger.warning("⚠️ eBay rate limit reached")
@@ -790,7 +603,6 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
     """Direct eBay market analysis"""
     logger.info(f"📊 Direct eBay market analysis for: '{keywords}'")
     
-    # Get sold items
     sold_items = search_ebay_directly(keywords, limit=10)
     
     if not sold_items:
@@ -801,7 +613,6 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
             'requires_auth': True
         }
     
-    # Calculate statistics
     prices = [item['price'] for item in sold_items if item['price'] > 0]
     
     if not prices:
@@ -843,44 +654,45 @@ def ensure_string_field(item_data: Dict, field_name: str) -> Dict:
 
 def ensure_numeric_fields(item_data: Dict) -> Dict:
     """Ensure numeric fields are proper numbers"""
-    # Ensure confidence is a float
     if 'confidence' in item_data and item_data['confidence'] is not None:
         try:
             if isinstance(item_data['confidence'], str):
                 item_data['confidence'] = float(item_data['confidence'])
         except (ValueError, TypeError):
-            item_data['confidence'] = 0.5  # Default value
+            item_data['confidence'] = 0.5
     
-    # Ensure resellability_rating is an int
     if 'resellability_rating' in item_data and item_data['resellability_rating'] is not None:
         try:
             if isinstance(item_data['resellability_rating'], str):
                 item_data['resellability_rating'] = int(item_data['resellability_rating'])
-            # Ensure it's between 1 and 10
             item_data['resellability_rating'] = max(1, min(10, item_data['resellability_rating']))
         except (ValueError, TypeError):
-            item_data['resellability_rating'] = 5  # Default value
+            item_data['resellability_rating'] = 5
     
-    # Ensure processing_time_seconds is an int
     if 'processing_time_seconds' in item_data and item_data['processing_time_seconds'] is not None:
         try:
             if isinstance(item_data['processing_time_seconds'], str):
                 item_data['processing_time_seconds'] = int(item_data['processing_time_seconds'])
         except (ValueError, TypeError):
-            item_data['processing_time_seconds'] = 25  # Default value
+            item_data['processing_time_seconds'] = 25
     
     return item_data
 
 def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Dict, user_keywords: Dict) -> Dict:
-    """Enhanced market analysis using REAL eBay data with USER-PRIORITIZED search"""
+    """
+    Enhanced market analysis using REAL eBay data with USER-PRIORITIZED search
+    🚨 FIXED: Uses detected category to guide search
+    """
     try:
-        # Start with user-provided keywords as primary search terms
         search_strategies = []
+        
+        # 🚨 GET DETECTED CATEGORY (from detect_category function)
+        detected_category = item_data.get('category', 'unknown')
+        logger.info(f"📦 Using detected category: '{detected_category}' for search")
         
         # 1. Build search from user input FIRST (highest priority)
         user_search_terms = []
         
-        # Add user keywords in priority order
         if user_keywords.get('years'):
             for year in user_keywords['years']:
                 user_search_terms.append(year)
@@ -894,17 +706,34 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 user_search_terms.append(model)
         
         if user_keywords.get('features'):
-            for feature in user_keywords['features'][:3]:  # Limit features
+            for feature in user_keywords['features'][:3]:
                 user_search_terms.append(feature)
+        
+        # 🚨 ADD CATEGORY-SPECIFIC TERM (if vehicles/automotive)
+        vehicle_type = None
+        if detected_category in ['vehicles', 'automotive']:
+            for term in user_search_terms + [item_data.get('model', '')]:
+                term_lower = str(term).lower()
+                if 'truck' in term_lower:
+                    vehicle_type = 'truck'
+                    break
+                elif 'car' in term_lower or 'sedan' in term_lower or 'coupe' in term_lower:
+                    vehicle_type = 'car'
+                    break
+                elif 'suv' in term_lower:
+                    vehicle_type = 'suv'
+                    break
+            
+            if vehicle_type:
+                user_search_terms.insert(0, vehicle_type)
+                logger.info(f"🚗 Added vehicle type '{vehicle_type}' to search")
         
         # Create user-prioritized search queries
         if user_search_terms:
-            # Strategy 1: All user terms combined (most specific)
-            user_query = " ".join(user_search_terms[:8])  # Limit length
+            user_query = " ".join(user_search_terms[:8])
             search_strategies.append(user_query)
             logger.info(f"🎯 USER-PRIORITIZED SEARCH 1: '{user_query}'")
             
-            # Strategy 2: Brand + Year + Model (if available)
             brand_year_query_parts = []
             if user_keywords.get('brands'):
                 brand_year_query_parts.append(user_keywords['brands'][0])
@@ -912,6 +741,10 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 brand_year_query_parts.append(user_keywords['years'][0])
             if user_keywords.get('models'):
                 brand_year_query_parts.append(user_keywords['models'][0])
+            
+            # 🚨 ADD VEHICLE TYPE if automotive
+            if detected_category in ['vehicles', 'automotive'] and vehicle_type:
+                brand_year_query_parts.insert(0, vehicle_type)
             
             if len(brand_year_query_parts) >= 2:
                 brand_year_query = " ".join(brand_year_query_parts)
@@ -921,33 +754,8 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
         # 2. Add AI-detected terms as secondary options
         brand = item_data.get('brand', '').strip()
         if brand and 'unknown' not in brand.lower():
-            # Only add AI brand if not already covered by user
             if not user_keywords.get('brands') or brand.lower() not in [b.lower() for b in user_keywords['brands']]:
                 search_strategies.append(brand)
-        
-        # Parse title for additional key terms
-        title = item_data.get("title", "")
-        if title:
-            title_terms = extract_search_terms_from_title(title)
-            if title_terms:
-                # Filter out terms already covered by user
-                filtered_terms = []
-                for term in title_terms:
-                    term_lower = term.lower()
-                    already_covered = False
-                    
-                    # Check if term is already in user keywords
-                    for category in ['years', 'brands', 'models', 'features']:
-                        if any(term_lower in str(kw).lower() for kw in user_keywords.get(category, [])):
-                            already_covered = True
-                            break
-                    
-                    if not already_covered and len(term) > 2:
-                        filtered_terms.append(term)
-                
-                if filtered_terms:
-                    ai_query = ' '.join(filtered_terms[:3])
-                    search_strategies.append(ai_query)
         
         # Clean strategies
         cleaned_strategies = []
@@ -957,9 +765,9 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 seen.add(strategy)
                 cleaned_strategy = clean_search_query(strategy)
                 if cleaned_strategy:
-                    cleaned_strategies.append(cleaned_strategy[:50])  # Shorter queries
+                    cleaned_strategies.append(cleaned_strategy[:50])
         
-        search_strategies = cleaned_strategies[:3]  # Only 3 strategies max
+        search_strategies = cleaned_strategies[:3]
         
         if not search_strategies:
             logger.warning("No valid search strategies")
@@ -967,7 +775,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             item_data['identification_confidence'] = "low"
             return item_data
         
-        # Try to get REAL eBay market analysis with user-prioritized search
+        # Try to get REAL eBay market analysis
         market_analysis = None
         
         for strategy in search_strategies:
@@ -978,7 +786,6 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 market_analysis = analysis
                 break
             elif analysis and analysis.get('error') == 'NO_EBAY_DATA':
-                # eBay API failed completely - abort
                 logger.error("❌ EBAY API FAILED - CANNOT PROCEED")
                 item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account in the app settings to get real market data."
                 item_data['price_range'] = "Authentication Required"
@@ -989,11 +796,9 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 return item_data
         
         if market_analysis:
-            # Update item data with REAL market info
             item_data['price_range'] = market_analysis['price_range']
             item_data['suggested_cost'] = f"${market_analysis['recommended_price']:.2f}"
             
-            # Calculate profit
             avg_price = market_analysis['average_price']
             ebay_fees = avg_price * 0.13
             shipping_cost = 12.00
@@ -1006,7 +811,6 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             else:
                 item_data['profit_potential'] = f"${abs(profit):.2f} potential loss"
             
-            # Enhanced market insights showing user contribution
             insights = []
             if user_keywords:
                 insights.append(f"Search prioritized by user-provided details")
@@ -1026,7 +830,6 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             
             item_data['market_insights'] = ". ".join(insights) + ". " + item_data.get('market_insights', '')
             
-            # Add REAL eBay tips including user terms
             ebay_tips = []
             if search_strategies:
                 ebay_tips.append(f"Primary search terms: {search_strategies[0][:40]}")
@@ -1041,7 +844,6 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             
             logger.info(f"✅ REAL eBay market analysis successful (user-prioritized)")
             
-            # Add confidence indicator
             item_data['identification_confidence'] = market_analysis['confidence']
             item_data['data_source'] = market_analysis['data_source']
             if user_keywords:
@@ -1082,7 +884,6 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         # Build ENHANCED prompt with user-provided details
         enhanced_prompt = market_analysis_prompt
         
-        # Add user-provided information with emphasis
         if user_title or user_description:
             enhanced_prompt += f"\n\n🔍 **USER-PROVIDED IDENTIFICATION HINTS (HIGH PRIORITY):**\n"
             if user_title:
@@ -1101,7 +902,6 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 if user_keywords.get('features'):
                     enhanced_prompt += f"- **ADDITIONAL FEATURES:** {', '.join(user_keywords['features'][:5])}\n"
         
-        # Add search prioritization instructions
         enhanced_prompt += "\n\n🔍 **SEARCH PRIORITIZATION RULES (FOLLOW EXACTLY):**\n"
         enhanced_prompt += "1. **USER DETAILS TAKE ABSOLUTE PRECEDENCE** over AI detection\n"
         enhanced_prompt += "2. Use EXACT user-provided terms for identification and searching\n"
@@ -1130,18 +930,16 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         enhanced_items = []
         for item_data in ai_response:
             if isinstance(item_data, dict):
-                # Detect category using ALL available data including user input
                 title = item_data.get("title", "")
                 description = item_data.get("description", "")
                 
-                # Override with user details if provided
                 if user_title:
-                    # Incorporate user title into the item title
                     item_data["title"] = f"{user_title} - {title}" if title else user_title
                 
                 if user_description and not description:
                     item_data["description"] = user_description
                 
+                # 🚨 CRITICAL: Detect category BEFORE eBay search
                 detected_category = detect_category(
                     item_data.get("title", ""), 
                     item_data.get("description", ""),
@@ -1149,12 +947,13 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 )
                 item_data["category"] = detected_category
                 
+                logger.info(f"📦 FINAL CATEGORY: '{detected_category}'")
+                
                 # Enhance with REAL eBay market data using USER-PRIORITIZED search
                 item_data = enhance_with_ebay_data_user_prioritized(item_data, vision_analysis, user_keywords)
                 
                 # Check if eBay authentication is required
                 if item_data.get('identification_confidence') == 'requires_auth':
-                    # Return authentication error immediately
                     return {
                         "status": "failed",
                         "error": "EBAY_AUTH_REQUIRED",
@@ -1292,10 +1091,8 @@ def background_worker():
 # Start background worker on startup
 @app.on_event("startup")
 async def startup_event():
-    # Start background worker
     threading.Thread(target=background_worker, daemon=True, name="JobWorker-MaxAccuracy").start()
     
-    # Start keep-alive thread
     def keep_alive_loop():
         while True:
             time.sleep(25)
@@ -1314,14 +1111,11 @@ async def shutdown_event():
     job_executor.shutdown(wait=False)
     logger.info("🛑 Server shutting down")
 
-# ============= EBAY OAUTH ENDPOINTS (✅ WEB-TO-APP BRIDGE) =============
+# ============= EBAY OAUTH ENDPOINTS =============
 
 @app.get("/ebay/oauth/start")
 async def get_ebay_auth_url():
-    """
-    Generate eBay OAuth authorization URL
-    ✅ ALWAYS USES WEB REDIRECT (eBay requirement)
-    """
+    """Generate eBay OAuth authorization URL"""
     update_activity()
     
     try:
@@ -1330,7 +1124,6 @@ async def get_ebay_auth_url():
         if not app_id:
             raise HTTPException(status_code=500, detail="eBay credentials not configured")
         
-        # Generate auth URL
         auth_url, state = ebay_oauth.generate_auth_url()
         
         logger.info(f"🔗 Generated auth URL")
@@ -1354,15 +1147,11 @@ async def ebay_oauth_callback_get(
     error: Optional[str] = None, 
     state: Optional[str] = None
 ):
-    """
-    Handle eBay OAuth callback (GET from eBay)
-    ✅ EXCHANGES CODE FOR TOKEN, THEN REDIRECTS TO iOS APP
-    """
+    """Handle eBay OAuth callback"""
     update_activity()
     
     logger.info(f"🔔 eBay OAuth callback received. Code: {code is not None}, Error: {error}, State: {state}")
     
-    # Handle error from eBay
     if error:
         logger.error(f"❌ eBay OAuth error: {error}")
         redirect_url = f"ai-resell-pro://ebay-oauth-callback?error={error}"
@@ -1385,7 +1174,6 @@ async def ebay_oauth_callback_get(
             </html>
         """)
     
-    # Check for authorization code
     if not code:
         logger.error("❌ No authorization code received")
         redirect_url = "ai-resell-pro://ebay-oauth-callback?error=no_code"
@@ -1410,7 +1198,6 @@ async def ebay_oauth_callback_get(
     try:
         logger.info(f"✅ Received OAuth code: {code[:20]}...")
         
-        # ✅ EXCHANGE CODE FOR TOKEN (server-side, secure)
         token_response = ebay_oauth.exchange_code_for_token(code, state=state)
         
         if token_response and token_response.get("success"):
@@ -1418,14 +1205,12 @@ async def ebay_oauth_callback_get(
             
             token_id = token_response["token_id"]
             
-            # ✅ GET ACTUAL ACCESS TOKEN FOR IMAGE ANALYSIS
             token_data = ebay_oauth.get_user_token(token_id)
             if token_data and "access_token" in token_data:
                 access_token = token_data["access_token"]
                 store_ebay_token(access_token)
                 logger.info(f"✅ eBay access token stored for market analysis: {access_token[:20]}...")
             
-            # ✅ REDIRECT TO iOS APP WITH TOKEN_ID
             redirect_url = f"ai-resell-pro://ebay-oauth-callback?success=true&token_id={token_id}&state={state}"
             
             logger.info(f"🔗 Redirecting to iOS app: {redirect_url}")
@@ -1486,10 +1271,8 @@ async def ebay_oauth_callback_get(
                         </p>
                     </div>
                     <script>
-                        // Immediate redirect
                         window.location.href = "{redirect_url}";
                         
-                        // Fallback after 2 seconds
                         setTimeout(function() {{
                             if (document.visibilityState === 'visible') {{
                                 window.location.href = "{redirect_url}";
@@ -1545,11 +1328,10 @@ async def ebay_oauth_callback_get(
             </html>
         """)
 
+# Additional OAuth endpoints...
 @app.get("/ebay/oauth/token/{token_id}")
 async def get_ebay_token_endpoint(token_id: str):
-    """
-    Get eBay access token (for iOS app to use in API calls)
-    """
+    """Get eBay access token"""
     update_activity()
     
     try:
@@ -1558,10 +1340,8 @@ async def get_ebay_token_endpoint(token_id: str):
         if not token_data:
             raise HTTPException(status_code=404, detail="Token not found or expired")
         
-        # Refresh token if needed
         refresh_ebay_token_if_needed(token_id)
         
-        # Return only what's needed for API calls
         return {
             "success": True,
             "access_token": token_data["access_token"],
@@ -1575,146 +1355,20 @@ async def get_ebay_token_endpoint(token_id: str):
 
 @app.delete("/ebay/oauth/token/{token_id}")
 async def revoke_ebay_token(token_id: str):
-    """
-    Revoke/delete eBay token
-    """
+    """Revoke/delete eBay token"""
     update_activity()
     
     try:
         success = ebay_oauth.revoke_token(token_id)
         
         if success:
-            store_ebay_token(None)  # Clear stored token
+            store_ebay_token(None)
             return {"success": True, "message": "Token revoked"}
         else:
             raise HTTPException(status_code=404, detail="Token not found")
         
     except Exception as e:
         logger.error(f"Revoke token error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/ebay/oauth/status/{token_id}")
-async def check_ebay_token_status(token_id: str):
-    """
-    Check if eBay token is valid
-    """
-    update_activity()
-    
-    try:
-        token_data = ebay_oauth.get_user_token(token_id)
-        
-        if token_data:
-            expires_at = datetime.fromisoformat(token_data["expires_at"])
-            time_remaining = expires_at - datetime.now()
-            
-            return {
-                "valid": True,
-                "expires_at": token_data["expires_at"],
-                "seconds_remaining": int(time_remaining.total_seconds()),
-                "refreshable": "refresh_token" in token_data
-            }
-        else:
-            return {
-                "valid": False,
-                "message": "Token not found or expired without refresh"
-            }
-        
-    except Exception as e:
-        logger.error(f"Token status error: {e}")
-        return {"valid": False, "error": str(e)}
-
-@app.get("/ebay/token-status")
-async def get_ebay_token_status():
-    """
-    Check if eBay token is available for market analysis
-    """
-    update_activity()
-    
-    token = get_ebay_token()
-    
-    return {
-        "has_token": bool(token),
-        "token_length": len(token) if token else 0,
-        "can_analyze_market": bool(token),
-        "timestamp": datetime.now().isoformat(),
-        "message": "eBay token required for real market analysis" if not token else "eBay token ready for market analysis"
-    }
-
-@app.post("/api/ebay/analyze")
-async def analyze_ebay_market(request: Request):
-    """
-    Analyze market value using eBay Browse API
-    Called by iOS app with OAuth token
-    """
-    update_activity()
-    
-    try:
-        # Get authorization header
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
-        
-        access_token = auth_header[7:]  # Remove "Bearer "
-        
-        # Store the token for future use
-        store_ebay_token(access_token)
-        
-        # Parse request body
-        body = await request.json()
-        query = body.get("query", "")
-        
-        if not query:
-            raise HTTPException(status_code=400, detail="Missing query parameter")
-        
-        # Use REAL eBay API to analyze market
-        analysis = analyze_ebay_market_directly(query)
-        
-        if analysis.get('error'):
-            raise HTTPException(status_code=500, detail=analysis.get('message', 'eBay API error'))
-        
-        return analysis
-        
-    except Exception as e:
-        logger.error(f"Market analysis error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/ebay/search/sold")
-async def search_ebay_sold_items(request: Request):
-    """
-    Search sold items on eBay
-    Called by iOS app with OAuth token
-    """
-    update_activity()
-    
-    try:
-        # Get authorization header
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
-        
-        access_token = auth_header[7:]
-        
-        # Store the token for future use
-        store_ebay_token(access_token)
-        
-        # Parse request body
-        body = await request.json()
-        query = body.get("query", "")
-        limit = min(body.get("limit", 10), 20)
-        
-        if not query:
-            raise HTTPException(status_code=400, detail="Missing query parameter")
-        
-        # Search REAL eBay data
-        items = search_ebay_directly(query, limit)
-        
-        if not items:
-            raise HTTPException(status_code=500, detail="No eBay data found. Please ensure you are authenticated.")
-        
-        return items
-        
-    except Exception as e:
-        logger.error(f"Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============= MAIN ENDPOINTS =============
@@ -1727,7 +1381,6 @@ async def create_upload_file(
     update_activity()
     
     try:
-        # Check if eBay token is available for market analysis
         ebay_token = get_ebay_token()
         if not ebay_token:
             raise HTTPException(
@@ -1735,7 +1388,6 @@ async def create_upload_file(
                 detail="eBay authentication required. Please connect your eBay account in the app settings first."
             )
         
-        # Read image with reasonable limit
         image_bytes = await file.read()
         if len(image_bytes) > 8 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Image too large (max 8MB)")
@@ -1744,7 +1396,6 @@ async def create_upload_file(
         job_id = str(uuid.uuid4())
         
         with job_lock:
-            # Clean old jobs
             current_time = datetime.now()
             for old_id, old_job in list(job_storage.items()):
                 try:
@@ -1834,22 +1485,7 @@ async def health_check():
         "groq_status": groq_status,
         "ebay_status": ebay_status,
         "ebay_token_available": bool(ebay_token),
-        "processing_mode": "MAXIMUM_ACCURACY_REAL_EBAY_ONLY",
-        "timeout_protection": "25s processing window",
-        "features": [
-            "Maximum accuracy Groq AI analysis",
-            "REAL eBay market data integration",
-            "No mock data - real prices only",
-            "eBay OAuth authentication",
-            "Web-to-app redirect bridge",
-            "User input prioritization system"
-        ],
-        "requirements": [
-            "eBay authentication REQUIRED for market analysis",
-            "Real market data only - no estimates",
-            "25 second processing limit",
-            "User details are prioritized over AI detection"
-        ]
+        "processing_mode": "MAXIMUM_ACCURACY_REAL_EBAY_ONLY"
     }
 
 @app.get("/ping")
@@ -1859,8 +1495,6 @@ async def ping():
         "status": "✅ PONG",
         "timestamp": datetime.now().isoformat(),
         "message": "Server is awake and processing with REAL eBay data",
-        "keep_alive": "active",
-        "processing_mode": "maximum_accuracy_real_ebay_only",
         "ebay_ready": bool(get_ebay_token())
     }
 
@@ -1873,32 +1507,7 @@ async def root():
         "message": "🎯 AI Resell Pro API - REAL EBAY DATA EDITION",
         "status": "🚀 OPERATIONAL" if groq_client and ebay_token else "⚠️ AUTHENTICATION REQUIRED",
         "version": "3.5.0",
-        "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required",
-        "processing_capabilities": [
-            "Maximum accuracy item identification",
-            "REAL eBay market data integration",
-            "No mock data - real prices only",
-            "eBay OAuth authentication",
-            "Web-to-app redirect bridge",
-            "User input prioritization system"
-        ],
-        "requirements": [
-            "eBay authentication REQUIRED for market analysis",
-            "Real market data only - no estimates",
-            "25s processing window (Render: 30s)",
-            "User details take precedence over AI detection"
-        ],
-        "endpoints": {
-            "upload": "POST /upload_item (REAL eBay data required)",
-            "job_status": "GET /job/{job_id}/status",
-            "health": "GET /health",
-            "ping": "GET /ping (keep-alive)",
-            "ebay_auth": "GET /ebay/oauth/start (JSON auth URL)",
-            "ebay_callback": "GET /ebay/oauth/callback (OAuth web-to-app bridge)",
-            "ebay_token": "GET /ebay/oauth/token/{token_id} (get access token)",
-            "ebay_token_status": "GET /ebay/token-status (check token availability)",
-            "market_analysis": "POST /api/ebay/analyze (direct market analysis)"
-        }
+        "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required"
     }
 
 if __name__ == "__main__":
