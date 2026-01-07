@@ -3,7 +3,7 @@
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from groq import Groq
 from ebay_oauth import ebay_oauth
 import uuid
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Resell Pro API - Maximum Accuracy", 
-    version="3.3.0",
+    version="3.5.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -77,11 +77,72 @@ job_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="JobWorker")
 last_activity = time.time()
 activity_lock = threading.Lock()
 
+# eBay Token Storage
+EBAY_AUTH_TOKEN = None
+EBAY_TOKEN_LOCK = threading.Lock()
+
 def update_activity():
     """Update last activity timestamp"""
     with activity_lock:
         global last_activity
         last_activity = time.time()
+
+def get_ebay_token() -> Optional[str]:
+    """Get eBay OAuth token from storage"""
+    global EBAY_AUTH_TOKEN
+    
+    with EBAY_TOKEN_LOCK:
+        # Check if we have a token stored
+        if EBAY_AUTH_TOKEN:
+            logger.debug(f"🔑 Using stored eBay token: {EBAY_AUTH_TOKEN[:20]}...")
+            return EBAY_AUTH_TOKEN
+        
+        # Try to load from environment variable
+        token = os.getenv('EBAY_AUTH_TOKEN')
+        if token:
+            logger.info(f"🔑 Loaded eBay token from env: {token[:20]}...")
+            EBAY_AUTH_TOKEN = token
+            return token
+        
+        logger.warning("⚠️ No eBay OAuth token available")
+        return None
+
+def store_ebay_token(token: str):
+    """Store eBay OAuth token"""
+    global EBAY_AUTH_TOKEN
+    
+    with EBAY_TOKEN_LOCK:
+        EBAY_AUTH_TOKEN = token
+        logger.info(f"🔑 Stored new eBay token: {token[:20]}...")
+
+def refresh_ebay_token_if_needed(token_id: str) -> bool:
+    """Refresh eBay token if it's expired"""
+    try:
+        token_data = ebay_oauth.get_user_token(token_id)
+        if not token_data:
+            logger.warning("⚠️ No token data found for refresh")
+            return False
+        
+        expires_at = datetime.fromisoformat(token_data["expires_at"])
+        time_remaining = expires_at - datetime.now()
+        
+        if time_remaining.total_seconds() < 300:  # Less than 5 minutes remaining
+            logger.info("🔄 Token expiring soon, attempting refresh...")
+            if "refresh_token" in token_data:
+                refreshed = ebay_oauth.refresh_token(token_data["refresh_token"])
+                if refreshed and refreshed.get("success"):
+                    logger.info("✅ Token refreshed successfully")
+                    if refreshed.get("access_token"):
+                        store_ebay_token(refreshed["access_token"])
+                    return True
+                else:
+                    logger.error("❌ Token refresh failed")
+                    return False
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Token refresh check error: {e}")
+        return False
 
 # MAXIMUM ACCURACY MARKET ANALYSIS PROMPT - ENHANCED
 market_analysis_prompt = """
@@ -388,119 +449,6 @@ def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
     
     return max(scores.items(), key=lambda x: x[1])[0]
 
-def enhance_with_ebay_data(item_data: Dict, vision_analysis: Dict) -> Dict:
-    """Enhanced market analysis using eBay Browse API"""
-    try:
-        # Create search strategies (same as before)
-        search_strategies = []
-        brand = item_data.get('brand', '').strip()
-        
-        if brand and 'unknown' not in brand.lower():
-            search_strategies.append(brand)
-        
-        # Parse title for key terms
-        title = item_data.get('title', '')
-        if title:
-            title_terms = extract_search_terms_from_title(title)
-            if title_terms:
-                search_strategies.append(' '.join(title_terms[:2]))
-        
-        # Clean strategies
-        cleaned_strategies = []
-        seen = set()
-        for strategy in search_strategies:
-            if strategy and strategy not in seen and len(strategy) > 2:
-                seen.add(strategy)
-                cleaned_strategies.append(strategy[:30])  # Shorter queries
-        
-        search_strategies = cleaned_strategies[:2]  # Only 2 strategies max
-        
-        if not search_strategies:
-            logger.warning("No valid search strategies")
-            return item_data
-        
-        # Try each search strategy
-        all_sold_items = []
-        
-        for strategy in search_strategies:
-            logger.info(f"🔍 Searching eBay with: '{strategy}'")
-            
-            # Use the new Browse API method
-            sold_items = ebay_api.search_sold_items(strategy, limit=5)
-            
-            if sold_items:
-                all_sold_items.extend(sold_items)
-            
-            # If we found good data, we can stop
-            if len(all_sold_items) >= 5:
-                break
-        
-        if all_sold_items:
-            # Calculate comprehensive statistics
-            prices = [item['price'] for item in all_sold_items if item['price'] > 0]
-            
-            if prices:
-                avg_price = sum(prices) / len(prices)
-                min_price = min(prices)
-                max_price = max(prices)
-                median_price = sorted(prices)[len(prices) // 2]
-                
-                # Update item data with real market info
-                item_data['price_range'] = f"${min_price:.2f} - ${max_price:.2f}"
-                item_data['suggested_cost'] = f"${median_price * 0.85:.2f}"
-                
-                # Calculate profit
-                ebay_fees = median_price * 0.13
-                shipping_cost = 12.00
-                estimated_net = median_price - ebay_fees - shipping_cost
-                suggested_purchase = median_price * 0.85
-                profit = estimated_net - suggested_purchase
-                
-                if profit > 0:
-                    item_data['profit_potential'] = f"${profit:.2f} profit (after all fees)"
-                else:
-                    item_data['profit_potential'] = f"Not profitable at suggested price"
-                
-                # Enhanced market insights
-                insights = []
-                insights.append(f"Based on {len(all_sold_items)} recent eBay sales")
-                insights.append(f"Median sold price: ${median_price:.2f}")
-                insights.append(f"Price range: ${min_price:.2f} - ${max_price:.2f}")
-                
-                item_data['market_insights'] = ". ".join(insights) + ". " + item_data.get('market_insights', '')
-                
-                # Add search strategy insights
-                if search_strategies:
-                    item_data['ebay_specific_tips'] = [
-                        f"Best search terms: {', '.join(search_strategies[:2])}",
-                        "Use 'Buy It Now' with Best Offer option",
-                        "Include measurements in description",
-                        "Take photos from multiple angles"
-                    ]
-                
-                logger.info(f"✅ eBay enhancement successful with {len(all_sold_items)} sold items")
-                
-                # Add confidence indicator
-                if len(all_sold_items) >= 5:
-                    item_data['identification_confidence'] = "high"
-                elif len(all_sold_items) >= 3:
-                    item_data['identification_confidence'] = "medium"
-                else:
-                    item_data['identification_confidence'] = "low"
-                    
-            else:
-                logger.warning("Found items but no price data")
-        else:
-            logger.warning("No eBay results found")
-            item_data['market_insights'] = "Limited market data available. " + item_data.get('market_insights', '')
-        
-        return item_data
-        
-    except Exception as e:
-        logger.error(f"❌ eBay data enhancement failed: {e}")
-        item_data['market_insights'] = f"Market data unavailable. {item_data.get('market_insights', '')}"
-        return item_data
-
 class EnhancedAppItem:
     def __init__(self, data: Dict[str, Any]):
         self.title = data.get("title", "Unknown Item")
@@ -639,8 +587,226 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         logger.error(f"Groq API call failed: {e}")
         raise Exception(f"Groq API error: {str(e)[:100]}")
 
+def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
+    """Direct eBay search using OAuth token"""
+    token = get_ebay_token()
+    if not token:
+        logger.error("❌ No eBay OAuth token available")
+        return []
+    
+    try:
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+        }
+        
+        params = {
+            'q': keywords,
+            'limit': str(limit),
+            'filter': 'soldItems'
+        }
+        
+        url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+        
+        logger.info(f"🔍 Direct eBay search for: '{keywords}'")
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        
+        logger.info(f"   Status: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'itemSummaries' in data:
+                items = []
+                for item in data['itemSummaries'][:limit]:
+                    try:
+                        price = item.get('price', {}).get('value', '0')
+                        items.append({
+                            'title': item.get('title', ''),
+                            'price': float(price),
+                            'item_id': item.get('itemId', ''),
+                            'condition': item.get('condition', ''),
+                            'category': item.get('categoryPath', ''),
+                            'image_url': item.get('image', {}).get('imageUrl', '')
+                        })
+                    except (KeyError, ValueError) as e:
+                        logger.debug(f"   Skipping item: {e}")
+                        continue
+                
+                logger.info(f"✅ Direct eBay search found {len(items)} sold items")
+                return items
+        elif response.status_code == 401:
+            logger.error("❌ eBay token expired or invalid")
+            store_ebay_token(None)  # Clear invalid token
+            return []
+        elif response.status_code == 429:
+            logger.warning("⚠️ eBay rate limit reached")
+            return []
+        else:
+            logger.error(f"❌ eBay search error {response.status_code}: {response.text[:200]}")
+            
+    except Exception as e:
+        logger.error(f"❌ Direct eBay search error: {e}")
+    
+    return []
+
+def analyze_ebay_market_directly(keywords: str) -> Dict:
+    """Direct eBay market analysis"""
+    logger.info(f"📊 Direct eBay market analysis for: '{keywords}'")
+    
+    # Get sold items
+    sold_items = search_ebay_directly(keywords, limit=10)
+    
+    if not sold_items:
+        logger.error("❌ NO EBAY DATA AVAILABLE - APP CANNOT FUNCTION")
+        return {
+            'error': 'NO_EBAY_DATA',
+            'message': 'eBay API failed - please ensure you are authenticated and try again',
+            'requires_auth': True
+        }
+    
+    # Calculate statistics
+    prices = [item['price'] for item in sold_items if item['price'] > 0]
+    
+    if not prices:
+        logger.error("❌ No valid price data from eBay")
+        return {
+            'error': 'NO_PRICE_DATA',
+            'message': 'eBay returned items but no price data',
+            'requires_auth': False
+        }
+    
+    avg_price = sum(prices) / len(prices)
+    min_price = min(prices)
+    max_price = max(prices)
+    median_price = sorted(prices)[len(prices) // 2]
+    
+    analysis = {
+        'success': True,
+        'average_price': round(avg_price, 2),
+        'price_range': f"${min_price:.2f} - ${max_price:.2f}",
+        'total_sold_analyzed': len(sold_items),
+        'recommended_price': round(median_price * 0.85, 2),
+        'market_notes': f'Based on {len(sold_items)} recent eBay sales',
+        'data_source': 'eBay Browse API',
+        'confidence': 'high' if len(sold_items) >= 5 else 'medium',
+        'api_used': 'Browse API'
+    }
+    
+    return analysis
+
+def enhance_with_ebay_data(item_data: Dict, vision_analysis: Dict) -> Dict:
+    """Enhanced market analysis using REAL eBay data ONLY"""
+    try:
+        # Create search strategies
+        search_strategies = []
+        brand = item_data.get('brand', '').strip()
+        
+        if brand and 'unknown' not in brand.lower():
+            search_strategies.append(brand)
+        
+        # Parse title for key terms
+        title = item_data.get('title', '')
+        if title:
+            title_terms = extract_search_terms_from_title(title)
+            if title_terms:
+                search_strategies.append(' '.join(title_terms[:2]))
+        
+        # Clean strategies
+        cleaned_strategies = []
+        seen = set()
+        for strategy in search_strategies:
+            if strategy and strategy not in seen and len(strategy) > 2:
+                seen.add(strategy)
+                cleaned_strategies.append(strategy[:30])  # Shorter queries
+        
+        search_strategies = cleaned_strategies[:2]  # Only 2 strategies max
+        
+        if not search_strategies:
+            logger.warning("No valid search strategies")
+            item_data['market_insights'] = "Cannot search eBay - no identifiable terms. " + item_data.get('market_insights', '')
+            item_data['identification_confidence'] = "low"
+            return item_data
+        
+        # Try to get REAL eBay market analysis
+        market_analysis = None
+        
+        for strategy in search_strategies:
+            logger.info(f"🔍 Analyzing REAL eBay market with: '{strategy}'")
+            analysis = analyze_ebay_market_directly(strategy)
+            
+            if analysis and analysis.get('success'):
+                market_analysis = analysis
+                break
+            elif analysis and analysis.get('error') == 'NO_EBAY_DATA':
+                # eBay API failed completely - abort
+                logger.error("❌ EBAY API FAILED - CANNOT PROCEED")
+                item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account in the app settings to get real market data."
+                item_data['price_range'] = "Authentication Required"
+                item_data['suggested_cost'] = "Connect eBay Account"
+                item_data['profit_potential'] = "eBay data unavailable"
+                item_data['identification_confidence'] = "requires_auth"
+                item_data['ebay_specific_tips'] = ["Connect your eBay account in settings", "Authenticate to access real market data", "Try again after authentication"]
+                return item_data
+        
+        if market_analysis:
+            # Update item data with REAL market info
+            item_data['price_range'] = market_analysis['price_range']
+            item_data['suggested_cost'] = f"${market_analysis['recommended_price']:.2f}"
+            
+            # Calculate profit
+            avg_price = market_analysis['average_price']
+            ebay_fees = avg_price * 0.13
+            shipping_cost = 12.00
+            estimated_net = avg_price - ebay_fees - shipping_cost
+            suggested_purchase = market_analysis['recommended_price']
+            profit = estimated_net - suggested_purchase
+            
+            if profit > 0:
+                item_data['profit_potential'] = f"${profit:.2f} profit (after all fees)"
+            else:
+                item_data['profit_potential'] = f"${abs(profit):.2f} potential loss"
+            
+            # Enhanced market insights
+            insights = [
+                f"Based on {market_analysis['total_sold_analyzed']} recent eBay sales",
+                f"Average price: ${market_analysis['average_price']:.2f}",
+                f"Price range: {market_analysis['price_range']}",
+                f"Confidence: {market_analysis['confidence']}"
+            ]
+            
+            item_data['market_insights'] = ". ".join(insights) + ". " + item_data.get('market_insights', '')
+            
+            # Add REAL eBay tips
+            item_data['ebay_specific_tips'] = [
+                f"Search terms: {', '.join(search_strategies[:2])}",
+                "Use 'Buy It Now' with Best Offer option",
+                "Include measurements in description",
+                "Take photos from multiple angles",
+                "List on weekends for best visibility"
+            ]
+            
+            logger.info(f"✅ REAL eBay market analysis successful")
+            
+            # Add confidence indicator
+            item_data['identification_confidence'] = market_analysis['confidence']
+            item_data['data_source'] = market_analysis['data_source']
+                    
+        else:
+            logger.error("❌ NO EBAY MARKET ANALYSIS AVAILABLE")
+            item_data['market_insights'] = "⚠️ Real eBay market data required but unavailable. Please ensure you are authenticated and try again."
+            item_data['identification_confidence'] = "low"
+        
+        return item_data
+        
+    except Exception as e:
+        logger.error(f"❌ eBay data enhancement failed: {e}")
+        item_data['market_insights'] = f"⚠️ eBay API error: {str(e)[:100]}. Please try again."
+        item_data['identification_confidence'] = "error"
+        return item_data
+
 def process_image_maximum_accuracy(job_data: Dict) -> Dict:
-    """MAXIMUM accuracy processing - uses ALL available information"""
+    """MAXIMUM accuracy processing - uses REAL eBay data ONLY"""
     try:
         if not groq_client:
             return {"status": "failed", "error": "Groq client not configured"}
@@ -660,7 +826,7 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         # Add search guidance
         prompt += "\n\nSEARCH GUIDANCE: Use ALL available information. If specific identification is unclear, analyze by observable characteristics and provide actionable guidance for better identification."
         
-        logger.info(f"🔬 Starting MAXIMUM ACCURACY analysis with ALL available data...")
+        logger.info(f"🔬 Starting MAXIMUM ACCURACY analysis with REAL eBay data...")
         
         # Call Groq API for detailed analysis
         response_text = call_groq_api(prompt, image_base64, mime_type)
@@ -688,10 +854,20 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 )
                 item_data["category"] = detected_category
                 
-                # Enhance with COMPREHENSIVE eBay market data
+                # Enhance with REAL eBay market data ONLY
                 item_data = enhance_with_ebay_data(item_data, vision_analysis)
                 
-                # Ensure we have ALL required fields with intelligent defaults
+                # Check if eBay authentication is required
+                if item_data.get('identification_confidence') == 'requires_auth':
+                    # Return authentication error immediately
+                    return {
+                        "status": "failed",
+                        "error": "EBAY_AUTH_REQUIRED",
+                        "message": "eBay authentication required for market analysis",
+                        "requires_auth": True
+                    }
+                
+                # Ensure we have ALL required fields
                 if not item_data.get('brand'):
                     item_data['brand'] = "Unknown"
                 if not item_data.get('model'):
@@ -711,53 +887,28 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
             else:
                 logger.warning(f"Skipping non-dictionary item: {item_data}")
         
-        # CRITICAL: NEVER return empty results
+        # CRITICAL: If no items, return error
         if not enhanced_items:
-            logger.warning("⚠️ No items parsed, creating intelligent fallback analysis")
-            enhanced_items.append(EnhancedAppItem({
-                "title": "Item Analysis - Additional Information Needed",
-                "description": "The image requires additional details for accurate identification. Please provide clear photos of any labels, tags, or serial numbers, and include manufacturer information if available.",
-                "price_range": "Market analysis requires specific identification",
-                "resellability_rating": 3,
-                "suggested_cost": "Determine precise identification first",
-                "market_insights": "Accurate identification is essential for market valuation. Focus on obtaining clear identifying marks or labels.",
-                "authenticity_checks": "Verify any markings, labels, or serial numbers. Check construction quality and materials.",
-                "profit_potential": "Cannot determine without precise identification",
-                "category": "unknown",
-                "ebay_specific_tips": [
-                    "Take multiple clear photos from all angles",
-                    "Photograph any labels, tags, or serial numbers",
-                    "Include measurements with ruler for scale",
-                    "Use good lighting to show details clearly"
-                ],
-                "brand": "Unknown",
-                "model": "Model unknown",
-                "year": "Unknown",
-                "condition": "Condition unknown",
-                "confidence": 0.1,
-                "analysis_depth": "limited",
-                "key_features": ["Requires better visual information"],
-                "comparable_items": "Search eBay for similar items",
-                "identification_confidence": "low",
-                "additional_info_needed": [
-                    "Clear photo of any markings or labels",
-                    "Manufacturer information",
-                    "Exact measurements"
-                ]
-            }).to_dict())
+            logger.error("❌ NO ITEMS PARSED FROM AI RESPONSE")
+            return {
+                "status": "failed",
+                "error": "NO_AI_ANALYSIS",
+                "message": "AI failed to analyze the image"
+            }
         
-        logger.info(f"✅ Processing complete: {len(enhanced_items)} items with maximum accuracy")
+        logger.info(f"✅ Processing complete: {len(enhanced_items)} items with REAL eBay data")
         
         return {
             "status": "completed",
             "result": {
-                "message": f"Maximum accuracy analysis completed with {len(enhanced_items)} items",
+                "message": f"Maximum accuracy analysis completed with {len(enhanced_items)} items using REAL eBay data",
                 "items": enhanced_items,
                 "processing_time": "25-30s",
                 "analysis_stages": 3,
                 "confidence_level": "maximum_accuracy",
                 "analysis_timestamp": datetime.now().isoformat(),
-                "model_used": groq_model
+                "model_used": groq_model,
+                "ebay_data_used": True
             }
         }
         
@@ -798,6 +949,11 @@ def background_worker():
                         job_data['status'] = 'completed'
                         job_data['result'] = result['result']
                         logger.info(f"✅ Job {job_id} completed successfully")
+                    elif result.get('error') == 'EBAY_AUTH_REQUIRED':
+                        job_data['status'] = 'failed'
+                        job_data['error'] = 'eBay authentication required. Please connect your eBay account first.'
+                        job_data['requires_auth'] = True
+                        logger.error(f"❌ Job {job_id} requires eBay authentication")
                     else:
                         job_data['status'] = 'failed'
                         job_data['error'] = result.get('error', 'Unknown error')
@@ -842,7 +998,7 @@ async def startup_event():
     
     threading.Thread(target=keep_alive_loop, daemon=True, name="KeepAlive").start()
     
-    logger.info("🚀 Server started with MAXIMUM ACCURACY processing only")
+    logger.info("🚀 Server started with MAXIMUM ACCURACY processing and REAL eBay data ONLY")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -953,6 +1109,13 @@ async def ebay_oauth_callback_get(
             
             token_id = token_response["token_id"]
             
+            # ✅ GET ACTUAL ACCESS TOKEN FOR IMAGE ANALYSIS
+            token_data = ebay_oauth.get_user_token(token_id)
+            if token_data and "access_token" in token_data:
+                access_token = token_data["access_token"]
+                store_ebay_token(access_token)
+                logger.info(f"✅ eBay access token stored for market analysis: {access_token[:20]}...")
+            
             # ✅ REDIRECT TO iOS APP WITH TOKEN_ID
             redirect_url = f"ai-resell-pro://ebay-oauth-callback?success=true&token_id={token_id}&state={state}"
             
@@ -1006,6 +1169,7 @@ async def ebay_oauth_callback_get(
                     <div class="container">
                         <h1>✅ Authorization Successful!</h1>
                         <div class="spinner"></div>
+                        <p>eBay connected for real market data</p>
                         <p>Redirecting to AI Resell Pro...</p>
                         <p style="margin-top: 30px; font-size: 0.9em;">
                             If you are not redirected automatically,<br>
@@ -1073,7 +1237,7 @@ async def ebay_oauth_callback_get(
         """)
 
 @app.get("/ebay/oauth/token/{token_id}")
-async def get_ebay_token(token_id: str):
+async def get_ebay_token_endpoint(token_id: str):
     """
     Get eBay access token (for iOS app to use in API calls)
     """
@@ -1084,6 +1248,9 @@ async def get_ebay_token(token_id: str):
         
         if not token_data:
             raise HTTPException(status_code=404, detail="Token not found or expired")
+        
+        # Refresh token if needed
+        refresh_ebay_token_if_needed(token_id)
         
         # Return only what's needed for API calls
         return {
@@ -1108,6 +1275,7 @@ async def revoke_ebay_token(token_id: str):
         success = ebay_oauth.revoke_token(token_id)
         
         if success:
+            store_ebay_token(None)  # Clear stored token
             return {"success": True, "message": "Token revoked"}
         else:
             raise HTTPException(status_code=404, detail="Token not found")
@@ -1146,6 +1314,23 @@ async def check_ebay_token_status(token_id: str):
         logger.error(f"Token status error: {e}")
         return {"valid": False, "error": str(e)}
 
+@app.get("/ebay/token-status")
+async def get_ebay_token_status():
+    """
+    Check if eBay token is available for market analysis
+    """
+    update_activity()
+    
+    token = get_ebay_token()
+    
+    return {
+        "has_token": bool(token),
+        "token_length": len(token) if token else 0,
+        "can_analyze_market": bool(token),
+        "timestamp": datetime.now().isoformat(),
+        "message": "eBay token required for real market analysis" if not token else "eBay token ready for market analysis"
+    }
+
 @app.post("/api/ebay/analyze")
 async def analyze_ebay_market(request: Request):
     """
@@ -1162,6 +1347,9 @@ async def analyze_ebay_market(request: Request):
         
         access_token = auth_header[7:]  # Remove "Bearer "
         
+        # Store the token for future use
+        store_ebay_token(access_token)
+        
         # Parse request body
         body = await request.json()
         query = body.get("query", "")
@@ -1169,18 +1357,11 @@ async def analyze_ebay_market(request: Request):
         if not query:
             raise HTTPException(status_code=400, detail="Missing query parameter")
         
-        # Use eBay API to analyze market
-        # For now, return mock data - you would implement real eBay API calls here
-        analysis = {
-            "average_price": 125.50,
-            "price_range": "$85.00 - $225.00",
-            "total_sold_analyzed": 42,
-            "recommended_price": 106.68,
-            "market_notes": f"Based on 42 recent eBay sales of '{query}'",
-            "data_source": "eBay Browse API",
-            "confidence": "high",
-            "api_used": "Browse API"
-        }
+        # Use REAL eBay API to analyze market
+        analysis = analyze_ebay_market_directly(query)
+        
+        if analysis.get('error'):
+            raise HTTPException(status_code=500, detail=analysis.get('message', 'eBay API error'))
         
         return analysis
         
@@ -1204,187 +1385,28 @@ async def search_ebay_sold_items(request: Request):
         
         access_token = auth_header[7:]
         
+        # Store the token for future use
+        store_ebay_token(access_token)
+        
         # Parse request body
         body = await request.json()
         query = body.get("query", "")
-        limit = body.get("limit", 10)
+        limit = min(body.get("limit", 10), 20)
         
         if not query:
             raise HTTPException(status_code=400, detail="Missing query parameter")
         
-        # Mock data - replace with real eBay API call
-        items = []
-        for i in range(min(limit, 10)):
-            items.append({
-                "item_id": f"mock_{i}_{int(time.time())}",
-                "title": f"{query} - Item {i+1}",
-                "price": 50.00 + (i * 25),
-                "condition": "Used",
-                "category": "Collectibles",
-                "end_time": (datetime.now() - timedelta(days=i)).isoformat()
-            })
+        # Search REAL eBay data
+        items = search_ebay_directly(query, limit)
+        
+        if not items:
+            raise HTTPException(status_code=500, detail="No eBay data found. Please ensure you are authenticated.")
         
         return items
         
     except Exception as e:
         logger.error(f"Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/ebay/store-token")
-async def store_ebay_token(token_data: Dict[str, Any]):
-    """Store eBay OAuth token (for testing)"""
-    update_activity()
-    
-    try:
-        access_token = token_data.get('access_token')
-        refresh_token = token_data.get('refresh_token')
-        
-        if access_token:
-            logger.info(f"🔐 Received eBay access token: {access_token[:30]}...")
-            
-            # In production, you would store this in a database
-            # For now, we'll just log it and return success
-            
-            return {
-                "status": "success",
-                "message": "Token received (logged to server)",
-                "token_info": {
-                    "access_token_length": len(access_token),
-                    "refresh_token_available": bool(refresh_token),
-                    "timestamp": datetime.now().isoformat()
-                }
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "No access token provided"
-            }
-            
-    except Exception as e:
-        logger.error(f"❌ Token storage error: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-# ============= EBAY MARKETPLACE ACCOUNT DELETION ENDPOINT =============
-@app.post("/ebay/marketplace-account-deletion")
-async def marketplace_account_deletion_post(
-    request: Request,
-    x_ebay_signature: str = Header(None),
-    x_ebay_timestamp: str = Header(None)
-):
-    """
-    Handle eBay POST notifications for marketplace account deletion
-    """
-    try:
-        # Get raw body
-        body_bytes = await request.body()
-        body_str = body_bytes.decode('utf-8')
-        
-        logger.info(f"🔔 Received eBay POST marketplace account deletion request")
-        logger.info(f"📦 Headers: X-EBAY-Signature: {x_ebay_signature[:50] if x_ebay_signature else 'None'}...")
-        logger.info(f"📦 Headers: X-EBAY-Timestamp: {x_ebay_timestamp}")
-        
-        # Get verification token from environment
-        verification_token = os.getenv('MARKETPLACE_DELETION_TOKEN', '')
-        
-        if verification_token and x_ebay_signature and x_ebay_timestamp:
-            # Verify signature if all components are present
-            message = x_ebay_timestamp + body_str
-            expected_sig = hmac.new(
-                verification_token.encode('utf-8'),
-                message.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            logger.info(f"🔐 Expected signature: {expected_sig[:50]}...")
-            logger.info(f"🔐 Received signature: {x_ebay_signature[:50]}...")
-            
-            if not hmac.compare_digest(expected_sig, x_ebay_signature):
-                logger.warning("❌ Signature verification failed")
-                # Still return 200 OK - eBay expects acknowledgment
-                return {
-                    "status": "error_acknowledged",
-                    "message": "Signature verification failed",
-                    "timestamp": x_ebay_timestamp
-                }
-            else:
-                logger.info("✅ Signature verification passed")
-        
-        # Parse the notification if there's a body
-        if body_str and body_str.strip():
-            try:
-                data = json.loads(body_str)
-                logger.info(f"📋 Parsed notification data:")
-                logger.info(f"   Type: {data.get('notificationType', 'unknown')}")
-                logger.info(f"   ID: {data.get('notificationId', 'unknown')}")
-                
-                # Extract user information
-                user_data = data.get('data', {})
-                if user_data:
-                    logger.info(f"👤 User data:")
-                    logger.info(f"   Username: {user_data.get('username', 'unknown')}")
-                    logger.info(f"   User ID: {user_data.get('userId', 'unknown')}")
-                    
-                    # TODO: Implement actual deletion logic here
-                    # 1. Find user in your database by ebay_user_id
-                    # 2. Delete their data
-                    # 3. Remove any associated listings
-                    # 4. Log the deletion for compliance
-                    
-            except json.JSONDecodeError:
-                logger.warning(f"📋 Raw body (non-JSON): {body_str[:200]}")
-        
-        # ALWAYS return 200 OK to acknowledge receipt
-        response_data = {
-            "status": "success",
-            "message": "Marketplace account deletion request received and queued for processing",
-            "timestamp": x_ebay_timestamp or datetime.now().isoformat(),
-            "server_time": datetime.now().isoformat()
-        }
-        
-        logger.info(f"✅ Returning response: {response_data}")
-        return response_data
-        
-    except Exception as e:
-        logger.error(f"❌ Error in marketplace account deletion endpoint: {e}")
-        # Still return 200 OK - eBay expects acknowledgment even on error
-        return {
-            "status": "error_acknowledged",
-            "message": f"Error: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-# ADD THIS GET ENDPOINT FOR VERIFICATION
-@app.get("/ebay/marketplace-account-deletion")
-async def marketplace_account_deletion_get(challenge_code: Optional[str] = None):
-    """
-    Handle eBay GET verification requests
-    eBay sends a GET with challenge_code for verification
-    """
-    logger.info(f"🔔 Received eBay GET verification request")
-    logger.info(f"📦 Challenge code: {challenge_code}")
-    
-    if challenge_code:
-        logger.info(f"✅ eBay verification challenge received: {challenge_code}")
-        # Return the challenge code to prove we received it
-        return {
-            "status": "success",
-            "message": "Endpoint verification successful",
-            "challenge_received": challenge_code,
-            "verification": "complete",
-            "timestamp": datetime.now().isoformat()
-        }
-    else:
-        logger.info(f"📝 Regular GET request to endpoint")
-        return {
-            "status": "ready",
-            "message": "Marketplace account deletion endpoint is active",
-            "methods_supported": ["GET", "POST"],
-            "verification": "Send GET with challenge_code parameter to verify",
-            "timestamp": datetime.now().isoformat()
-        }
 
 # ============= MAIN ENDPOINTS =============
 @app.post("/upload_item/")
@@ -1396,6 +1418,14 @@ async def create_upload_file(
     update_activity()
     
     try:
+        # Check if eBay token is available for market analysis
+        ebay_token = get_ebay_token()
+        if not ebay_token:
+            raise HTTPException(
+                status_code=400, 
+                detail="eBay authentication required. Please connect your eBay account in the app settings first."
+            )
+        
         # Read image with reasonable limit
         image_bytes = await file.read()
         if len(image_bytes) > 8 * 1024 * 1024:
@@ -1421,21 +1451,25 @@ async def create_upload_file(
                 'title': title,
                 'description': description,
                 'status': 'queued',
-                'created_at': datetime.now().isoformat()
+                'created_at': datetime.now().isoformat(),
+                'requires_ebay_auth': not bool(ebay_token)
             }
         
         job_queue.put(job_id)
-        logger.info(f"📤 Job {job_id} queued (MAXIMUM ACCURACY)")
+        logger.info(f"📤 Job {job_id} queued (MAXIMUM ACCURACY with REAL eBay data)")
         
         return {
-            "message": "Analysis queued with MAXIMUM ACCURACY",
+            "message": "Analysis queued with MAXIMUM ACCURACY using REAL eBay market data",
             "job_id": job_id,
             "status": "queued",
             "estimated_time": "25-30 seconds",
             "check_status_url": f"/job/{job_id}/status",
-            "note": "Processing with comprehensive AI + eBay market data integration"
+            "note": "Processing with comprehensive AI + REAL eBay market data integration",
+            "ebay_auth_status": "connected" if ebay_token else "required"
         }
             
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(f"❌ Upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)[:200]}")
@@ -1453,7 +1487,8 @@ async def get_job_status(job_id: str):
     response = {
         "job_id": job_id,
         "status": job_data.get('status', 'unknown'),
-        "created_at": job_data.get('created_at')
+        "created_at": job_data.get('created_at'),
+        "requires_ebay_auth": job_data.get('requires_ebay_auth', False)
     }
     
     if job_data.get('status') == 'completed':
@@ -1462,6 +1497,7 @@ async def get_job_status(job_id: str):
     elif job_data.get('status') == 'failed':
         response["error"] = job_data.get('error', 'Unknown error')
         response["completed_at"] = job_data.get('completed_at')
+        response["requires_ebay_auth"] = job_data.get('requires_ebay_auth', False)
     elif job_data.get('status') == 'processing':
         response["started_at"] = job_data.get('started_at')
     
@@ -1475,41 +1511,32 @@ async def health_check():
         time_since = time.time() - last_activity
     
     groq_status = "✅ Ready" if groq_client else "❌ Not configured"
-    ebay_status = "✅ Configured" if os.getenv('EBAY_APP_ID') else "⚠️ Not configured"
+    ebay_token = get_ebay_token()
+    ebay_status = "✅ Connected" if ebay_token else "⚠️ Not connected"
     
     return {
-        "status": "✅ HEALTHY",
+        "status": "✅ HEALTHY" if groq_client and ebay_token else "⚠️ PARTIAL",
         "timestamp": datetime.now().isoformat(),
         "time_since_last_activity": f"{int(time_since)}s",
         "jobs_queued": job_queue.qsize(),
         "jobs_stored": len(job_storage),
         "groq_status": groq_status,
         "ebay_status": ebay_status,
-        "processing_mode": "MAXIMUM_ACCURACY_ONLY",
+        "ebay_token_available": bool(ebay_token),
+        "processing_mode": "MAXIMUM_ACCURACY_REAL_EBAY_ONLY",
         "timeout_protection": "25s processing window",
         "features": [
             "Maximum accuracy Groq AI analysis",
-            "Smart eBay search query generation",
-            "Intelligent market analysis",
-            "Job queue for timeout protection",
-            "eBay marketplace account deletion endpoint",
-            "eBay OAuth authorization endpoints"
+            "REAL eBay market data integration",
+            "No mock data - real prices only",
+            "eBay OAuth authentication",
+            "Web-to-app redirect bridge"
+        ],
+        "requirements": [
+            "eBay authentication REQUIRED for market analysis",
+            "Real market data only - no estimates",
+            "25 second processing limit"
         ]
-    }
-
-@app.get("/ebay/test-api")
-async def test_ebay_api():
-    """Test eBay API connection"""
-    update_activity()
-    
-    test_result = ebay_api.test_api_connection()
-    
-    return {
-        "status": test_result.get('status'),
-        "message": test_result.get('message'),
-        "app_id": test_result.get('app_id'),
-        "details": test_result,
-        "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/ping")
@@ -1518,37 +1545,44 @@ async def ping():
     return {
         "status": "✅ PONG",
         "timestamp": datetime.now().isoformat(),
-        "message": "Server is awake and processing with maximum accuracy",
+        "message": "Server is awake and processing with REAL eBay data",
         "keep_alive": "active",
-        "processing_mode": "maximum_accuracy"
+        "processing_mode": "maximum_accuracy_real_ebay_only",
+        "ebay_ready": bool(get_ebay_token())
     }
 
 @app.get("/")
 async def root():
     update_activity()
+    ebay_token = get_ebay_token()
+    
     return {
-        "message": "🎯 AI Resell Pro API - MAXIMUM ACCURACY EDITION",
-        "status": "🚀 OPERATIONAL",
-        "version": "3.3.0",
+        "message": "🎯 AI Resell Pro API - REAL EBAY DATA EDITION",
+        "status": "🚀 OPERATIONAL" if groq_client and ebay_token else "⚠️ AUTHENTICATION REQUIRED",
+        "version": "3.5.0",
+        "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required",
         "processing_capabilities": [
             "Maximum accuracy item identification",
-            "Smart eBay search optimization",
-            "Comprehensive market analysis",
-            "Intelligent fallback guidance",
-            "GDPR/CCPA compliance endpoint",
-            "eBay OAuth authentication"
+            "REAL eBay market data integration",
+            "No mock data - real prices only",
+            "eBay OAuth authentication",
+            "Web-to-app redirect bridge"
         ],
-        "timeout_protection": "25s processing window (Render: 30s)",
+        "requirements": [
+            "eBay authentication REQUIRED for market analysis",
+            "Real market data only - no estimates",
+            "25s processing window (Render: 30s)"
+        ],
         "endpoints": {
-            "upload": "POST /upload_item (always maximum accuracy)",
+            "upload": "POST /upload_item (REAL eBay data required)",
             "job_status": "GET /job/{job_id}/status",
             "health": "GET /health",
             "ping": "GET /ping (keep-alive)",
-            "ebay_deletion": "GET/POST /ebay/marketplace-account-deletion",
             "ebay_auth": "GET /ebay/oauth/start (JSON auth URL)",
             "ebay_callback": "GET /ebay/oauth/callback (OAuth web-to-app bridge)",
             "ebay_token": "GET /ebay/oauth/token/{token_id} (get access token)",
-            "ebay_token_status": "GET /ebay/oauth/status/{token_id} (check token)"
+            "ebay_token_status": "GET /ebay/token-status (check token availability)",
+            "market_analysis": "POST /api/ebay/analyze (direct market analysis)"
         }
     }
 
@@ -1556,7 +1590,7 @@ if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"🚀 Starting MAXIMUM ACCURACY server on port {port}")
+    logger.info(f"🚀 Starting REAL EBAY DATA server on port {port}")
     
     uvicorn.run(
         app,
