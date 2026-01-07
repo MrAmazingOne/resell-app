@@ -831,6 +831,46 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
     
     return analysis
 
+def ensure_string_field(item_data: Dict, field_name: str) -> Dict:
+    """Ensure a field is always a string, converting if necessary"""
+    if field_name in item_data and item_data[field_name] is not None:
+        value = item_data[field_name]
+        if isinstance(value, (int, float)):
+            item_data[field_name] = str(int(value))
+        elif not isinstance(value, str):
+            item_data[field_name] = str(value)
+    return item_data
+
+def ensure_numeric_fields(item_data: Dict) -> Dict:
+    """Ensure numeric fields are proper numbers"""
+    # Ensure confidence is a float
+    if 'confidence' in item_data and item_data['confidence'] is not None:
+        try:
+            if isinstance(item_data['confidence'], str):
+                item_data['confidence'] = float(item_data['confidence'])
+        except (ValueError, TypeError):
+            item_data['confidence'] = 0.5  # Default value
+    
+    # Ensure resellability_rating is an int
+    if 'resellability_rating' in item_data and item_data['resellability_rating'] is not None:
+        try:
+            if isinstance(item_data['resellability_rating'], str):
+                item_data['resellability_rating'] = int(item_data['resellability_rating'])
+            # Ensure it's between 1 and 10
+            item_data['resellability_rating'] = max(1, min(10, item_data['resellability_rating']))
+        except (ValueError, TypeError):
+            item_data['resellability_rating'] = 5  # Default value
+    
+    # Ensure processing_time_seconds is an int
+    if 'processing_time_seconds' in item_data and item_data['processing_time_seconds'] is not None:
+        try:
+            if isinstance(item_data['processing_time_seconds'], str):
+                item_data['processing_time_seconds'] = int(item_data['processing_time_seconds'])
+        except (ValueError, TypeError):
+            item_data['processing_time_seconds'] = 25  # Default value
+    
+    return item_data
+
 def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Dict, user_keywords: Dict) -> Dict:
     """Enhanced market analysis using REAL eBay data with USER-PRIORITIZED search"""
     try:
@@ -886,7 +926,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 search_strategies.append(brand)
         
         # Parse title for additional key terms
-        title = item_data.get('title', '')
+        title = item_data.get("title", "")
         if title:
             title_terms = extract_search_terms_from_title(title)
             if title_terms:
@@ -1005,7 +1045,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             item_data['identification_confidence'] = market_analysis['confidence']
             item_data['data_source'] = market_analysis['data_source']
             if user_keywords:
-                item_data['user_input_utilized'] = True
+                item_data['user_input_incorporated'] = True
                     
         else:
             logger.error("❌ NO EBAY MARKET ANALYSIS AVAILABLE")
@@ -1137,6 +1177,11 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                         "Manufacturer information",
                         "Exact measurements"
                     ]
+                
+                # Ensure all fields are the correct type for iOS compatibility
+                item_data = ensure_string_field(item_data, "year")
+                item_data = ensure_string_field(item_data, "user_specified_year")
+                item_data = ensure_numeric_fields(item_data)
                 
                 # Add user input flag
                 if user_keywords:
