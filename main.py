@@ -3,7 +3,7 @@
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from groq import Groq
 from ebay_oauth import ebay_oauth
 import uuid
@@ -14,7 +14,7 @@ import logging
 import base64
 import requests
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from ebay_integration import ebay_api
 from dotenv import load_dotenv
 import uuid
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Resell Pro API - Maximum Accuracy", 
-    version="3.2.0",
+    version="3.3.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -849,53 +849,33 @@ async def shutdown_event():
     job_executor.shutdown(wait=False)
     logger.info("🛑 Server shutting down")
 
-# ============= EBAY OAUTH ENDPOINTS =============
+# ============= EBAY OAUTH ENDPOINTS (✅ WEB-TO-APP BRIDGE) =============
 
-@app.get("/ebay/auth/url")
+@app.get("/ebay/oauth/start")
 async def get_ebay_auth_url():
-    """Generate eBay OAuth authorization URL"""
+    """
+    Generate eBay OAuth authorization URL
+    ✅ ALWAYS USES WEB REDIRECT (eBay requirement)
+    """
     update_activity()
     
     try:
-        # Get eBay credentials from environment
         app_id = os.getenv('EBAY_APP_ID')
-        ru_name = os.getenv('EBAY_RU_NAME')
         
-        if not app_id or not ru_name:
+        if not app_id:
             raise HTTPException(status_code=500, detail="eBay credentials not configured")
         
-        # Production eBay OAuth URL
-        base_url = "https://auth.ebay.com/oauth2/authorize"
+        # Generate auth URL
+        auth_url, state = ebay_oauth.generate_auth_url()
         
-        # Required scopes for production
-        scopes = [
-            "https://api.ebay.com/oauth/api_scope",
-            "https://api.ebay.com/oauth/api_scope/sell.inventory",
-            "https://api.ebay.com/oauth/api_scope/sell.marketing",
-            "https://api.ebay.com/oauth/api_scope/sell.account",
-            "https://api.ebay.com/oauth/api_scope/sell.fulfillment"
-        ]
-        
-        params = {
-            "client_id": app_id,
-            "response_type": "code",
-            "redirect_uri": f"https://resell-app-bi47.onrender.com/ebay/oauth/callback",
-            "scope": " ".join(scopes),
-            "state": str(uuid.uuid4()),
-            "prompt": "login"  # Force login to see consent page
-        }
-        
-        auth_url = f"{base_url}?{urllib.parse.urlencode(params)}"
-        
-        logger.info(f"🔗 Generated eBay OAuth URL for app: {app_id}")
+        logger.info(f"🔗 Generated auth URL")
+        logger.info(f"🔗 State: {state}")
         
         return {
-            "status": "success",
+            "success": True,
             "auth_url": auth_url,
-            "scopes": scopes,
-            "app_id": app_id[:10] + "...",
-            "ru_name": ru_name,
-            "redirect_uri": params["redirect_uri"],
+            "state": state,
+            "redirect_uri": "https://resell-app-bi47.onrender.com/ebay/oauth/callback",
             "timestamp": datetime.now().isoformat()
         }
         
@@ -904,423 +884,267 @@ async def get_ebay_auth_url():
         raise HTTPException(status_code=500, detail=f"Failed to generate auth URL: {str(e)}")
 
 @app.get("/ebay/oauth/callback")
-async def ebay_oauth_callback(code: Optional[str] = None, error: Optional[str] = None, state: Optional[str] = None):
-    """Handle eBay OAuth callback"""
+async def ebay_oauth_callback_get(
+    code: Optional[str] = None, 
+    error: Optional[str] = None, 
+    state: Optional[str] = None
+):
+    """
+    Handle eBay OAuth callback (GET from eBay)
+    ✅ EXCHANGES CODE FOR TOKEN, THEN REDIRECTS TO iOS APP
+    """
     update_activity()
     
     logger.info(f"🔔 eBay OAuth callback received. Code: {code is not None}, Error: {error}, State: {state}")
     
+    # Handle error from eBay
     if error:
         logger.error(f"❌ eBay OAuth error: {error}")
-        return {
-            "status": "error",
-            "message": f"OAuth authorization failed: {error}",
-            "timestamp": datetime.now().isoformat()
-        }
+        redirect_url = f"ai-resell-pro://ebay-oauth-callback?error={error}"
+        
+        return HTMLResponse(content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Authorization Failed</title>
+                <meta http-equiv="refresh" content="0; url={redirect_url}">
+            </head>
+            <body>
+                <script>
+                    window.location.href = "{redirect_url}";
+                </script>
+                <h1>❌ Authorization Failed</h1>
+                <p>Error: {error}</p>
+                <p><a href="{redirect_url}">Return to app</a></p>
+            </body>
+            </html>
+        """)
     
+    # Check for authorization code
     if not code:
         logger.error("❌ No authorization code received")
-        return {
-            "status": "error",
-            "message": "No authorization code received",
-            "timestamp": datetime.now().isoformat()
-        }
+        redirect_url = "ai-resell-pro://ebay-oauth-callback?error=no_code"
+        
+        return HTMLResponse(content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Authorization Failed</title>
+                <meta http-equiv="refresh" content="0; url={redirect_url}">
+            </head>
+            <body>
+                <script>
+                    window.location.href = "{redirect_url}";
+                </script>
+                <h1>❌ No Authorization Code</h1>
+                <p><a href="{redirect_url}">Return to app</a></p>
+            </body>
+            </html>
+        """)
     
     try:
         logger.info(f"✅ Received OAuth code: {code[:20]}...")
         
-        # Exchange code for token
-        token_response = await exchange_code_for_token(code)
+        # ✅ EXCHANGE CODE FOR TOKEN (server-side, secure)
+        token_response = ebay_oauth.exchange_code_for_token(code, state=state)
         
-        if token_response.get("access_token"):
+        if token_response and token_response.get("success"):
             logger.info("✅ Successfully obtained eBay OAuth token")
             
-            return {
-                "status": "success",
-                "message": "eBay authorization successful! You can close this window.",
-                "code": code[:20] + "...",
-                "token_info": {
-                    "access_token": token_response["access_token"][:20] + "...",
-                    "expires_in": token_response.get("expires_in"),
-                    "token_type": token_response.get("token_type"),
-                    "refresh_token": token_response.get("refresh_token", "")[:20] + "..." if token_response.get("refresh_token") else None
-                },
-                "timestamp": datetime.now().isoformat()
-            }
+            token_id = token_response["token_id"]
+            
+            # ✅ REDIRECT TO iOS APP WITH TOKEN_ID
+            redirect_url = f"ai-resell-pro://ebay-oauth-callback?success=true&token_id={token_id}&state={state}"
+            
+            logger.info(f"🔗 Redirecting to iOS app: {redirect_url}")
+            
+            return HTMLResponse(content=f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Redirecting to AI Resell Pro...</title>
+                    <meta http-equiv="refresh" content="0; url={redirect_url}">
+                    <style>
+                        body {{
+                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            min-height: 100vh;
+                            margin: 0;
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            color: white;
+                            text-align: center;
+                        }}
+                        .container {{
+                            background: rgba(255, 255, 255, 0.1);
+                            padding: 40px;
+                            border-radius: 20px;
+                            backdrop-filter: blur(10px);
+                        }}
+                        h1 {{ margin: 0 0 20px 0; font-size: 2em; }}
+                        .spinner {{
+                            border: 4px solid rgba(255, 255, 255, 0.3);
+                            border-top: 4px solid white;
+                            border-radius: 50%;
+                            width: 50px;
+                            height: 50px;
+                            animation: spin 1s linear infinite;
+                            margin: 20px auto;
+                        }}
+                        @keyframes spin {{
+                            0% {{ transform: rotate(0deg); }}
+                            100% {{ transform: rotate(360deg); }}
+                        }}
+                        a {{
+                            color: white;
+                            text-decoration: underline;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>✅ Authorization Successful!</h1>
+                        <div class="spinner"></div>
+                        <p>Redirecting to AI Resell Pro...</p>
+                        <p style="margin-top: 30px; font-size: 0.9em;">
+                            If you are not redirected automatically,<br>
+                            <a href="{redirect_url}">click here</a>
+                        </p>
+                    </div>
+                    <script>
+                        // Immediate redirect
+                        window.location.href = "{redirect_url}";
+                        
+                        // Fallback after 2 seconds
+                        setTimeout(function() {{
+                            if (document.visibilityState === 'visible') {{
+                                window.location.href = "{redirect_url}";
+                            }}
+                        }}, 2000);
+                    </script>
+                </body>
+                </html>
+            """)
         else:
             logger.error(f"❌ Failed to exchange code for token: {token_response}")
-            return {
-                "status": "error",
-                "message": "Failed to exchange authorization code for access token",
-                "details": token_response,
-                "timestamp": datetime.now().isoformat()
-            }
+            error_msg = token_response.get("error", "unknown") if token_response else "no_response"
+            redirect_url = f"ai-resell-pro://ebay-oauth-callback?error=token_exchange_failed&details={error_msg}"
+            
+            return HTMLResponse(content=f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Authorization Failed</title>
+                    <meta http-equiv="refresh" content="0; url={redirect_url}">
+                </head>
+                <body>
+                    <script>
+                        window.location.href = "{redirect_url}";
+                    </script>
+                    <h1>❌ Token Exchange Failed</h1>
+                    <p>Error: {error_msg}</p>
+                    <p><a href="{redirect_url}">Return to app</a></p>
+                </body>
+                </html>
+            """)
         
     except Exception as e:
         logger.error(f"❌ OAuth callback error: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
+        error_msg = str(e)[:100]
+        redirect_url = f"ai-resell-pro://ebay-oauth-callback?error=callback_error&details={error_msg}"
+        
+        return HTMLResponse(content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Authorization Error</title>
+                <meta http-equiv="refresh" content="0; url={redirect_url}">
+            </head>
+            <body>
+                <script>
+                    window.location.href = "{redirect_url}";
+                </script>
+                <h1>❌ Authorization Error</h1>
+                <p>Error: {error_msg}</p>
+                <p><a href="{redirect_url}">Return to app</a></p>
+            </body>
+            </html>
+        """)
 
-async def exchange_code_for_token(authorization_code: str):
-    """Exchange authorization code for OAuth token"""
+@app.get("/ebay/oauth/token/{token_id}")
+async def get_ebay_token(token_id: str):
+    """
+    Get eBay access token (for iOS app to use in API calls)
+    """
+    update_activity()
+    
     try:
-        app_id = os.getenv('EBAY_APP_ID')
-        cert_id = os.getenv('EBAY_CERT_ID')
+        token_data = ebay_oauth.get_user_token(token_id)
         
-        if not app_id or not cert_id:
-            raise Exception("eBay credentials not configured")
+        if not token_data:
+            raise HTTPException(status_code=404, detail="Token not found or expired")
         
-        # Production eBay token endpoint
-        token_url = "https://api.ebay.com/identity/v1/oauth2/token"
-        
-        # Prepare request headers and body
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Authorization": f"Basic {base64.b64encode(f'{app_id}:{cert_id}'.encode()).decode()}"
+        # Return only what's needed for API calls
+        return {
+            "success": True,
+            "access_token": token_data["access_token"],
+            "expires_at": token_data["expires_at"],
+            "token_type": token_data.get("token_type", "Bearer")
         }
         
-        data = {
-            "grant_type": "authorization_code",
-            "code": authorization_code,
-            "redirect_uri": f"https://resell-app-bi47.onrender.com/ebay/oauth/callback"
-        }
-        
-        logger.info(f"🔄 Exchanging code for token with app_id: {app_id[:10]}...")
-        
-        response = requests.post(token_url, headers=headers, data=data, timeout=30)
-        
-        logger.info(f"🔁 Token exchange response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            token_data = response.json()
-            logger.info(f"✅ Token exchange successful. Token type: {token_data.get('token_type')}")
-            
-            # Store the token (in production, you'd store this in a database)
-            # For now, we'll just log it
-            if token_data.get("access_token"):
-                logger.info(f"🔐 Access token obtained: {token_data['access_token'][:20]}...")
-            
-            return token_data
-        else:
-            logger.error(f"❌ Token exchange failed: {response.status_code} - {response.text}")
-            return {
-                "error": f"Token exchange failed: {response.status_code}",
-                "details": response.text[:200]
-            }
-            
     except Exception as e:
-        logger.error(f"❌ Token exchange error: {e}")
-        return {"error": str(e)}
+        logger.error(f"Get token error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/auth/ebay/callback")
-async def ebay_oauth_callback_alt(code: Optional[str] = None, error: Optional[str] = None, state: Optional[str] = None):
-    """Alternative OAuth callback endpoint"""
-    return await ebay_oauth_callback(code=code, error=error, state=state)
-
-@app.get("/ebay/auth", response_class=HTMLResponse)
-async def ebay_auth_page():
-    """HTML page for eBay authorization"""
+@app.delete("/ebay/oauth/token/{token_id}")
+async def revoke_ebay_token(token_id: str):
+    """
+    Revoke/delete eBay token
+    """
     update_activity()
     
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>eBay Authorization - AI Resell Pro</title>
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                max-width: 600px;
-                margin: 50px auto;
-                padding: 20px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .container {
-                background: white;
-                border-radius: 12px;
-                padding: 40px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-                text-align: center;
-            }
-            h1 {
-                color: #333;
-                margin-bottom: 10px;
-            }
-            .subtitle {
-                color: #666;
-                margin-bottom: 30px;
-                font-size: 16px;
-            }
-            .auth-button {
-                display: inline-block;
-                background: #0064d2;
-                color: white;
-                text-decoration: none;
-                padding: 16px 32px;
-                border-radius: 8px;
-                font-size: 18px;
-                font-weight: bold;
-                margin: 20px 0;
-                transition: all 0.3s;
-                border: none;
-                cursor: pointer;
-            }
-            .auth-button:hover {
-                background: #0050a8;
-                transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(0,100,210,0.3);
-            }
-            .instructions {
-                background: #f8f9fa;
-                border-left: 4px solid #0064d2;
-                padding: 15px;
-                margin: 20px 0;
-                text-align: left;
-                border-radius: 4px;
-            }
-            .step {
-                margin: 10px 0;
-                padding: 5px 0;
-            }
-            .status {
-                margin-top: 20px;
-                padding: 15px;
-                border-radius: 8px;
-                background: #e8f4fd;
-                border: 1px solid #b6d4fe;
-                display: none;
-            }
-            .error {
-                background: #fde8e8;
-                border: 1px solid #f5c6cb;
-            }
-            .success {
-                background: #d4edda;
-                border: 1px solid #c3e6cb;
-            }
-            .token-info {
-                background: #f8f9fa;
-                padding: 15px;
-                border-radius: 8px;
-                margin-top: 20px;
-                font-family: monospace;
-                font-size: 12px;
-                word-break: break-all;
-                text-align: left;
-                display: none;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🔐 eBay Authorization</h1>
-            <div class="subtitle">AI Resell Pro needs access to your eBay account</div>
-            
-            <div class="instructions">
-                <div class="step">1. Click the button below to authorize with eBay</div>
-                <div class="step">2. Sign in to your eBay account (if not already signed in)</div>
-                <div class="step">3. Review and agree to the permissions</div>
-                <div class="step">4. You'll be redirected back to this app</div>
-            </div>
-            
-            <a href="/ebay/auth/url" class="auth-button" id="authButton">
-                Authorize with eBay
-            </a>
-            
-            <div id="status" class="status"></div>
-            
-            <script>
-                document.getElementById('authButton').addEventListener('click', async function(e) {
-                    e.preventDefault();
-                    const button = this;
-                    const statusDiv = document.getElementById('status');
-                    
-                    button.innerHTML = '⏳ Generating authorization URL...';
-                    button.disabled = true;
-                    statusDiv.style.display = 'block';
-                    statusDiv.className = 'status';
-                    statusDiv.innerHTML = 'Please wait...';
-                    
-                    try {
-                        const response = await fetch('/ebay/auth/url');
-                        const data = await response.json();
-                        
-                        if (data.status === 'success') {
-                            statusDiv.innerHTML = '✅ Authorization URL generated successfully! Redirecting to eBay...';
-                            statusDiv.className = 'status success';
-                            
-                            // Redirect to eBay after a brief delay
-                            setTimeout(() => {
-                                window.location.href = data.auth_url;
-                            }, 1000);
-                        } else {
-                            statusDiv.innerHTML = '❌ Failed to generate URL: ' + (data.message || 'Unknown error');
-                            statusDiv.className = 'status error';
-                            button.innerHTML = 'Try Again';
-                            button.disabled = false;
-                        }
-                    } catch (error) {
-                        statusDiv.innerHTML = '❌ Error: ' + error.message;
-                        statusDiv.className = 'status error';
-                        button.innerHTML = 'Try Again';
-                        button.disabled = false;
-                    }
-                });
-                
-                // Check URL parameters for OAuth callback result
-                const urlParams = new URLSearchParams(window.location.search);
-                const code = urlParams.get('code');
-                const error = urlParams.get('error');
-                
-                if (code) {
-                    document.getElementById('status').innerHTML = 
-                        '✅ Authorization successful! Processing token exchange...';
-                    document.getElementById('status').style.display = 'block';
-                    document.getElementById('status').className = 'status success';
-                    document.getElementById('authButton').style.display = 'none';
-                    
-                    // Exchange code for token
-                    fetch(`/ebay/oauth/callback?code=${code}`)
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.status === 'success') {
-                                document.getElementById('status').innerHTML = 
-                                    '🎉 Authorization Complete!<br><br>' +
-                                    '✅ Access Token: ' + data.token_info.access_token.substring(0, 30) + '...<br>' +
-                                    '✅ Token Type: ' + data.token_info.token_type + '<br>' +
-                                    '✅ Expires in: ' + data.token_info.expires_in + ' seconds<br><br>' +
-                                    'You can now use the app with your eBay account.';
-                                    
-                                // Store token (in a real app, you'd send this to your server)
-                                if (data.token_info.access_token) {
-                                    localStorage.setItem('ebay_access_token', data.token_info.access_token);
-                                    localStorage.setItem('ebay_refresh_token', data.token_info.refresh_token || '');
-                                }
-                            } else {
-                                document.getElementById('status').innerHTML = 
-                                    '❌ Token exchange failed: ' + (data.message || 'Unknown error');
-                                document.getElementById('status').className = 'status error';
-                            }
-                        })
-                        .catch(error => {
-                            document.getElementById('status').innerHTML = 
-                                '❌ Error exchanging token: ' + error.message;
-                            document.getElementById('status').className = 'status error';
-                        });
-                }
-                
-                if (error) {
-                    document.getElementById('status').innerHTML = 
-                        '❌ Authorization failed: ' + error;
-                    document.getElementById('status').style.display = 'block';
-                    document.getElementById('status').className = 'status error';
-                }
-            </script>
-        </div>
-    </body>
-    </html>
-    """
-    
-    return HTMLResponse(content=html_content)
+    try:
+        success = ebay_oauth.revoke_token(token_id)
+        
+        if success:
+            return {"success": True, "message": "Token revoked"}
+        else:
+            raise HTTPException(status_code=404, detail="Token not found")
+        
+    except Exception as e:
+        logger.error(f"Revoke token error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/ebay/auth/simple", response_class=HTMLResponse)
-async def ebay_auth_simple():
-    """Simple direct eBay authorization page"""
+@app.get("/ebay/oauth/status/{token_id}")
+async def check_ebay_token_status(token_id: str):
+    """
+    Check if eBay token is valid
+    """
     update_activity()
     
-    # Get the auth URL directly
-    app_id = os.getenv('EBAY_APP_ID')
-    
-    if not app_id:
-        return HTMLResponse(content="<h1>Error: eBay App ID not configured</h1>")
-    
-    # Create the direct auth URL
-    scopes = [
-        "https://api.ebay.com/oauth/api_scope",
-        "https://api.ebay.com/oauth/api_scope/sell.inventory",
-        "https://api.ebay.com/oauth/api_scope/sell.marketing",
-        "https://api.ebay.com/oauth/api_scope/sell.account",
-        "https://api.ebay.com/oauth/api_scope/sell.fulfillment"
-    ]
-    
-    params = {
-        "client_id": app_id,
-        "response_type": "code",
-        "redirect_uri": "https://resell-app-bi47.onrender.com/ebay/oauth/callback",
-        "scope": " ".join(scopes),
-        "state": str(uuid.uuid4()),
-        "prompt": "login"
-    }
-    
-    auth_url = f"https://auth.ebay.com/oauth2/authorize?{urllib.parse.urlencode(params)}"
-    
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Authorize eBay Access</title>
-        <meta http-equiv="refresh" content="2; url={auth_url}">
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                text-align: center;
-                padding: 50px;
-                background: #f5f5f5;
-            }}
-            .container {{
-                background: white;
-                padding: 40px;
-                border-radius: 10px;
-                box-shadow: 0 0 20px rgba(0,0,0,0.1);
-                display: inline-block;
-            }}
-            h1 {{
-                color: #0064d2;
-            }}
-            .spinner {{
-                border: 4px solid #f3f3f3;
-                border-top: 4px solid #0064d2;
-                border-radius: 50%;
-                width: 40px;
-                height: 40px;
-                animation: spin 2s linear infinite;
-                margin: 20px auto;
-            }}
-            @keyframes spin {{
-                0% {{ transform: rotate(0deg); }}
-                100% {{ transform: rotate(360deg); }}
-            }}
-            .direct-link {{
-                display: block;
-                margin-top: 20px;
-                padding: 10px;
-                background: #0064d2;
-                color: white;
-                text-decoration: none;
-                border-radius: 5px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Redirecting to eBay...</h1>
-            <div class="spinner"></div>
-            <p>Please wait while we redirect you to eBay's authorization page.</p>
-            <p>If you are not redirected automatically, click the link below:</p>
-            <a href="{auth_url}" class="direct-link">Click here to authorize with eBay</a>
-        </div>
-    </body>
-    </html>
-    """
-    
-    return HTMLResponse(content=html_content)
+    try:
+        token_data = ebay_oauth.get_user_token(token_id)
+        
+        if token_data:
+            expires_at = datetime.fromisoformat(token_data["expires_at"])
+            time_remaining = expires_at - datetime.now()
+            
+            return {
+                "valid": True,
+                "expires_at": token_data["expires_at"],
+                "seconds_remaining": int(time_remaining.total_seconds()),
+                "refreshable": "refresh_token" in token_data
+            }
+        else:
+            return {
+                "valid": False,
+                "message": "Token not found or expired without refresh"
+            }
+        
+    except Exception as e:
+        logger.error(f"Token status error: {e}")
+        return {"valid": False, "error": str(e)}
 
 @app.post("/api/ebay/analyze")
 async def analyze_ebay_market(request: Request):
@@ -1616,156 +1440,6 @@ async def create_upload_file(
         logger.error(f"❌ Upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)[:200]}")
 
-@app.get("/ebay/oauth/start")
-async def start_ebay_oauth(state: Optional[str] = None):
-    """
-    Start eBay OAuth flow - returns URL for iOS app to open
-    """
-    update_activity()
-    
-    try:
-        auth_url, state_value = ebay_oauth.generate_auth_url(state)
-        
-        return {
-            "success": True,
-            "auth_url": auth_url,
-            "state": state_value,
-            "redirect_uri": "ai-resell-pro://ebay-oauth-callback",
-            "scopes": [
-                "View public eBay data",
-                "List items for sale",
-                "View your account info"
-            ]
-        }
-        
-    except Exception as e:
-        logger.error(f"OAuth start error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/ebay/oauth/callback")
-async def handle_ebay_oauth_callback(callback_data: Dict):
-    """
-    Handle OAuth callback from iOS app
-    Expected data: {"code": "authorization_code", "state": "state_value"}
-    """
-    update_activity()
-    
-    try:
-        authorization_code = callback_data.get("code")
-        state = callback_data.get("state")
-        
-        if not authorization_code:
-            raise HTTPException(status_code=400, detail="No authorization code provided")
-        
-        logger.info(f"🔔 Processing OAuth callback with code: {authorization_code[:20]}...")
-        
-        # Exchange code for token
-        token_result = ebay_oauth.exchange_code_for_token(authorization_code)
-        
-        if token_result and token_result.get("success"):
-            logger.info(f"✅ OAuth successful for token: {token_result['token_id']}")
-            
-            return {
-                "success": True,
-                "message": "eBay authorization successful",
-                "token_id": token_result["token_id"],
-                "access_token": token_result["access_token"][:20] + "...",
-                "has_refresh_token": bool(token_result.get("refresh_token")),
-                "expires_in": token_result.get("expires_in"),
-                "next_steps": [
-                    "Store token_id in your app",
-                    "Use token_id for eBay API calls",
-                    "Token will auto-refresh when needed"
-                ]
-            }
-        else:
-            error_msg = token_result.get("error", "Unknown error") if token_result else "No response"
-            logger.error(f"❌ OAuth failed: {error_msg}")
-            
-            return {
-                "success": False,
-                "error": error_msg,
-                "details": token_result.get("details") if token_result else None
-            }
-        
-    except Exception as e:
-        logger.error(f"OAuth callback error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/ebay/oauth/token/{token_id}")
-async def get_ebay_token(token_id: str):
-    """
-    Get eBay access token (for iOS app to use in API calls)
-    """
-    update_activity()
-    
-    try:
-        token_data = ebay_oauth.get_user_token(token_id)
-        
-        if not token_data:
-            raise HTTPException(status_code=404, detail="Token not found or expired")
-        
-        # Return only what's needed for API calls
-        return {
-            "success": True,
-            "access_token": token_data["access_token"],
-            "expires_at": token_data["expires_at"],
-            "token_type": token_data.get("token_type", "Bearer")
-        }
-        
-    except Exception as e:
-        logger.error(f"Get token error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/ebay/oauth/token/{token_id}")
-async def revoke_ebay_token(token_id: str):
-    """
-    Revoke/delete eBay token
-    """
-    update_activity()
-    
-    try:
-        success = ebay_oauth.revoke_token(token_id)
-        
-        if success:
-            return {"success": True, "message": "Token revoked"}
-        else:
-            raise HTTPException(status_code=404, detail="Token not found")
-        
-    except Exception as e:
-        logger.error(f"Revoke token error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/ebay/oauth/status/{token_id}")
-async def check_ebay_token_status(token_id: str):
-    """
-    Check if eBay token is valid
-    """
-    update_activity()
-    
-    try:
-        token_data = ebay_oauth.get_user_token(token_id)
-        
-        if token_data:
-            expires_at = datetime.fromisoformat(token_data["expires_at"])
-            time_remaining = expires_at - datetime.now()
-            
-            return {
-                "valid": True,
-                "expires_at": token_data["expires_at"],
-                "seconds_remaining": int(time_remaining.total_seconds()),
-                "refreshable": "refresh_token" in token_data
-            }
-        else:
-            return {
-                "valid": False,
-                "message": "Token not found or expired without refresh"
-            }
-        
-    except Exception as e:
-        logger.error(f"Token status error: {e}")
-        return {"valid": False, "error": str(e)}
-
 @app.get("/job/{job_id}/status")
 async def get_job_status(job_id: str):
     update_activity()
@@ -1855,7 +1529,7 @@ async def root():
     return {
         "message": "🎯 AI Resell Pro API - MAXIMUM ACCURACY EDITION",
         "status": "🚀 OPERATIONAL",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "processing_capabilities": [
             "Maximum accuracy item identification",
             "Smart eBay search optimization",
@@ -1871,10 +1545,10 @@ async def root():
             "health": "GET /health",
             "ping": "GET /ping (keep-alive)",
             "ebay_deletion": "GET/POST /ebay/marketplace-account-deletion",
-            "ebay_auth": "GET /ebay/auth (authorization page)",
-            "ebay_auth_simple": "GET /ebay/auth/simple (direct redirect)",
-            "ebay_auth_url": "GET /ebay/auth/url (JSON auth URL)",
-            "ebay_callback": "GET /ebay/oauth/callback (OAuth callback)"
+            "ebay_auth": "GET /ebay/oauth/start (JSON auth URL)",
+            "ebay_callback": "GET /ebay/oauth/callback (OAuth web-to-app bridge)",
+            "ebay_token": "GET /ebay/oauth/token/{token_id} (get access token)",
+            "ebay_token_status": "GET /ebay/oauth/status/{token_id} (check token)"
         }
     }
 

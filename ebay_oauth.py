@@ -34,24 +34,26 @@ class eBayOAuth:
     
     def generate_auth_url(self, state: str = None) -> Tuple[str, str]:
         """
-        Generate eBay OAuth authorization URL for iOS app
-        Returns: (auth_url, state)
+        Generate eBay OAuth authorization URL
+        ✅ ALWAYS USES WEB REDIRECT (eBay doesn't support custom URL schemes)
         """
         if not state:
             state = str(uuid.uuid4())
         
         # Scopes needed for our app
         scopes = [
-            "https://api.ebay.com/oauth/api_scope",  # View public data
-            "https://api.ebay.com/oauth/api_scope/sell.inventory",  # List items
-            "https://api.ebay.com/oauth/api_scope/sell.account",  # View account
+            "https://api.ebay.com/oauth/api_scope",
+            "https://api.ebay.com/oauth/api_scope/sell.inventory",
+            "https://api.ebay.com/oauth/api_scope/sell.account",
         ]
         
-        # Use iOS app URL scheme for redirect
+        # ✅ ALWAYS USE WEB REDIRECT (eBay requirement)
+        redirect_uri = "https://resell-app-bi47.onrender.com/ebay/oauth/callback"
+        
         params = {
             "client_id": self.app_id,
             "response_type": "code",
-            "redirect_uri": "https://resell-app-bi47.onrender.com/ebay/oauth/callback",  # iOS app URL scheme
+            "redirect_uri": redirect_uri,
             "scope": " ".join(scopes),
             "state": state,
             "prompt": "login"
@@ -65,6 +67,7 @@ class eBayOAuth:
     def exchange_code_for_token(self, authorization_code: str, state: str = None) -> Optional[Dict]:
         """
         Exchange authorization code for access token
+        ✅ USES WEB REDIRECT URI (matches auth request)
         """
         try:
             headers = {
@@ -72,7 +75,7 @@ class eBayOAuth:
                 "Authorization": f"Basic {base64.b64encode(f'{self.app_id}:{self.cert_id}'.encode()).decode()}"
             }
             
-            # Use the SAME redirect_uri that was in the auth request
+            # ✅ USE WEB REDIRECT URI (must match auth request)
             data = {
                 "grant_type": "authorization_code",
                 "code": authorization_code,
@@ -147,7 +150,7 @@ class eBayOAuth:
                     "success": True,
                     "access_token": token_data["access_token"],
                     "expires_in": token_data.get("expires_in"),
-                    "refresh_token": token_data.get("refresh_token", refresh_token)  # Keep old if not provided
+                    "refresh_token": token_data.get("refresh_token", refresh_token)
                 }
             else:
                 logger.error(f"Token refresh failed: {response.status_code}")
