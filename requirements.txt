@@ -12,3 +12,4 @@ gitpython>=3.1.40
 opencv-python-headless>=4.11.0
 numpy>=1.26.0
 setuptools>=70.0.0
+httpx>=0.25.0
