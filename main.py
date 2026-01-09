@@ -2069,7 +2069,7 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         # POST-PROCESS: Split combined card analyses
         if any(('celebi' in str(item.get('title', '')).lower() and 
                 'yveltal' in str(item.get('title', '')).lower() and 
-                'kyogre' in str(item.get('title', ')).lower()) 
+                'kyogre' in str(item.get('title', '')).lower()) 
                for item in ai_response):
             logger.info("🃏 POST-PROCESSING: Splitting combined card analysis")
             ai_response = extract_individual_cards_from_analysis(ai_response)
