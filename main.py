@@ -726,7 +726,7 @@ def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
     
     model_keywords = [
         'truck', 'pickup', 'sedan', 'coupe', 'convertible', 'suv', 'van',
-        'window', '5-window', 'deluxe', 'custom', 'standard', 'limited',
+        'deluxe', 'custom', 'standard', 'limited',
         'premium', 'luxury', 'sport', 'performance', 'edition', 'series',
         'grand', 'upright', 'baby grand', 'console',
         'first edition', '1st edition', 'shadowless', 'holographic', 'holo',
@@ -913,7 +913,7 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         raise Exception(f"Groq API error: {str(e)[:100]}")
 
 def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
-    """Direct eBay search using OAuth token - ONLY ACTUAL SOLD ITEMS"""
+    """Direct eBay search using OAuth token - ONLY COMPLETE SOLD ITEMS, NO PARTS"""
     token = get_ebay_token()
     if not token:
         logger.error("❌ No eBay OAuth token available")
@@ -926,17 +926,18 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
             'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
-        # 🚨 CRITICAL: Only get SOLD items (completed auctions/BIN with actual sales)
+        # 🚨 CRITICAL FILTERING: Get SOLD items only, filter out parts/incomplete items
         params = {
             'q': keywords,
-            'limit': str(limit * 3),  # Get more to filter
-            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},soldItems',
-            'sort': 'price'  # Sort by price to get realistic range
+            'limit': str(limit * 10),  # Get more to filter aggressively
+            'filter': 'soldItems',  # Only sold items
+            'sort': 'price',  # Sort by price to identify realistic ranges
+            'fieldgroups': 'FULL'  # Get full item details
         }
         
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
         
-        logger.info(f"🔍 Direct eBay search for: '{keywords}'")
+        logger.info(f"🔍 Direct eBay search for: '{keywords}' (filtering for COMPLETE items only)")
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
         logger.info(f"   Status: {response.status_code}")
@@ -944,41 +945,98 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
         if response.status_code == 200:
             data = response.json()
             if 'itemSummaries' in data:
+                logger.info(f"📊 eBay returned {len(data.get('itemSummaries', []))} total results")
+                
                 items = []
-                for item in data['itemSummaries']:
+                for i, item in enumerate(data['itemSummaries']):
                     try:
-                        # 🚨 CRITICAL: Only include items with realistic sale prices
+                        # Extract key information
+                        title = item.get('title', '').lower()
                         price = item.get('price', {}).get('value', '0')
                         price_float = float(price)
+                        condition = item.get('condition', '')
+                        category_path = item.get('categoryPath', '')
                         
-                        # Skip items with suspiciously low prices
-                        if price_float < 5.0:
-                            logger.debug(f"   Skipping item with price ${price_float} (too low - likely parts/shipping only)")
-                            continue
+                        # 🚨 AGGRESSIVE FILTERING FOR COMPLETE ITEMS ONLY
+                        # 1. Skip parts listings
+                        parts_keywords = ['part', 'parts', 'replacement', 'spare', 'broken', 'damaged', 
+                                         'cracked', 'for repair', 'for parts', 'not working', 'as is',
+                                         'incomplete', 'missing', 'broke', 'shattered']
                         
-                        # Verify item actually sold (has buyer info or completion status)
-                        item_url = item.get('itemWebUrl', '')
-                        if not item_url:
-                            logger.debug(f"   Skipping item - no confirmation URL")
-                            continue
+                        is_parts_listing = any(keyword in title for keyword in parts_keywords)
                         
-                        items.append({
-                            'title': item.get('title', ''),
-                            'price': price_float,
-                            'item_id': item.get('itemId', ''),
-                            'condition': item.get('condition', ''),
-                            'category': item.get('categoryPath', ''),
-                            'image_url': item.get('image', {}).get('imageUrl', '')
-                        })
+                        # 2. Skip suspiciously low prices (likely parts or incomplete)
+                        # For vehicles, minimum realistic price is $500
+                        # For other categories, minimum $10
+                        is_realistic_price = True
+                        if 'vehicle' in keywords.lower() or 'truck' in keywords.lower() or 'car' in keywords.lower():
+                            if price_float < 500:
+                                logger.debug(f"   [{i+1}] Skipping - unrealistic price for vehicle: ${price_float}")
+                                is_realistic_price = False
+                        elif price_float < 10:
+                            logger.debug(f"   [{i+1}] Skipping - suspiciously low price: ${price_float}")
+                            is_realistic_price = False
                         
-                        if len(items) >= limit:
-                            break
+                        # 3. Check for "for parts/not working" in condition
+                        is_working_condition = True
+                        if condition and ('for parts' in condition.lower() or 'not working' in condition.lower()):
+                            logger.debug(f"   [{i+1}] Skipping - condition indicates parts: {condition}")
+                            is_working_condition = False
+                        
+                        # 4. Check category - skip "Parts & Accessories" categories
+                        is_not_parts_category = True
+                        if category_path and ('parts' in category_path.lower() or 'accessories' in category_path.lower()):
+                            logger.debug(f"   [{i+1}] Skipping - parts category: {category_path}")
+                            is_not_parts_category = False
+                        
+                        # Only include items that pass ALL filters
+                        if (not is_parts_listing and 
+                            is_realistic_price and 
+                            is_working_condition and 
+                            is_not_parts_category):
                             
+                            # Debug logging
+                            logger.info(f"   ✅ [{i+1}] INCLUDED: '{title[:50]}...' - ${price_float}")
+                            
+                            items.append({
+                                'title': item.get('title', ''),
+                                'price': price_float,
+                                'item_id': item.get('itemId', ''),
+                                'condition': condition,
+                                'category': category_path,
+                                'image_url': item.get('image', {}).get('imageUrl', ''),
+                                'item_web_url': item.get('itemWebUrl', '')
+                            })
+                            
+                            if len(items) >= limit:
+                                break
+                        else:
+                            # Log why item was filtered out
+                            logger.debug(f"   ❌ [{i+1}] FILTERED OUT: '{title[:50]}...' - ${price_float}")
+                            if is_parts_listing:
+                                logger.debug(f"      Reason: Contains parts keywords")
+                            if not is_realistic_price:
+                                logger.debug(f"      Reason: Price ${price_float} too low for category")
+                            if not is_working_condition:
+                                logger.debug(f"      Reason: Condition: {condition}")
+                            if not is_not_parts_category:
+                                logger.debug(f"      Reason: Category: {category_path}")
+                                
                     except (KeyError, ValueError) as e:
-                        logger.debug(f"   Skipping item: {e}")
+                        logger.debug(f"   [{i+1}] Skipping item - parsing error: {e}")
                         continue
                 
-                logger.info(f"✅ Found {len(items)} ACTUAL sold items (filtered from {len(data.get('itemSummaries', []))} results)")
+                logger.info(f"✅ Found {len(items)} COMPLETE sold items (aggressively filtered from {len(data.get('itemSummaries', []))} results)")
+                
+                if len(items) == 0:
+                    logger.warning(f"⚠️ No complete items found after filtering. Try a more specific search.")
+                    # Try one more time with less strict filtering for debug
+                    logger.info(f"   First 5 unfiltered results:")
+                    for i, item in enumerate(data['itemSummaries'][:5]):
+                        title = item.get('title', '')[:60]
+                        price = item.get('price', {}).get('value', '0')
+                        logger.info(f"      {i+1}. ${price} - {title}...")
+                
                 return items
         elif response.status_code == 401:
             logger.error("❌ eBay token expired or invalid")
@@ -996,20 +1054,21 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
     return []
 
 def analyze_ebay_market_directly(keywords: str) -> Dict:
-    """Direct eBay market analysis - ONLY ACTUAL SOLD DATA"""
+    """Direct eBay market analysis - ONLY COMPLETE SOLD ITEMS"""
     logger.info(f"📊 Direct eBay market analysis for: '{keywords}'")
     
-    sold_items = search_ebay_directly(keywords, limit=10)
+    sold_items = search_ebay_directly(keywords, limit=15)  # Get more for better analysis
     
     if not sold_items:
-        logger.error("❌ NO EBAY DATA AVAILABLE")
+        logger.error("❌ NO COMPLETE EBAY DATA AVAILABLE - all items filtered out as parts/incomplete")
         return {
-            'error': 'NO_EBAY_DATA',
-            'message': 'eBay API failed - please ensure you are authenticated and try again',
-            'requires_auth': True
+            'error': 'NO_COMPLETE_ITEMS',
+            'message': 'eBay returned only parts/incomplete items. No complete items found for analysis.',
+            'requires_auth': False,
+            'filtered_out_parts': True
         }
     
-    prices = [item['price'] for item in sold_items if item['price'] >= 5.0]
+    prices = [item['price'] for item in sold_items]
     
     if not prices:
         logger.error("❌ No valid price data from eBay")
@@ -1025,8 +1084,8 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
     max_price = max(prices)
     median_price = sorted(prices)[len(prices) // 2]
     
-    # Remove outliers (prices more than 3x the median)
-    filtered_prices = [p for p in prices if p <= median_price * 3]
+    # Remove extreme outliers (prices more than 5x the median)
+    filtered_prices = [p for p in prices if p <= median_price * 5 and p >= median_price / 5]
     
     if filtered_prices:
         avg_price = sum(filtered_prices) / len(filtered_prices)
@@ -1040,11 +1099,13 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
         'median_price': round(median_price, 2),
         'price_range': f"${min_price:.2f} - ${max_price:.2f}",
         'total_sold_analyzed': len(sold_items),
+        'total_filtered': len(sold_items),
         'recommended_price': round(median_price * 0.85, 2),
-        'market_notes': f'Based on {len(sold_items)} recent eBay ACTUAL sales (filtered from low-quality data)',
-        'data_source': 'eBay Browse API - Sold Items Only',
+        'market_notes': f'Based on {len(sold_items)} recent COMPLETE eBay sales (parts/incomplete items filtered out)',
+        'data_source': 'eBay Browse API - Complete Sold Items Only',
         'confidence': 'high' if len(sold_items) >= 5 else 'medium',
-        'api_used': 'Browse API'
+        'api_used': 'Browse API',
+        'filtering_applied': 'Aggressive parts/incomplete filtering'
     }
     
     logger.info(f"✅ Market analysis: avg=${avg_price:.2f}, range=${min_price:.2f}-${max_price:.2f}")
@@ -1224,6 +1285,14 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             if analysis and analysis.get('success'):
                 market_analysis = analysis
                 break
+            elif analysis and analysis.get('error') == 'NO_COMPLETE_ITEMS':
+                logger.error("❌ NO COMPLETE ITEMS FOUND - eBay only has parts/incomplete listings")
+                item_data['market_insights'] = "⚠️ eBay only has parts/incomplete listings for this item. No complete sales data available."
+                item_data['price_range'] = "Parts/Incomplete Only"
+                item_data['suggested_cost'] = "No Complete Sales Data"
+                item_data['profit_potential'] = "Cannot estimate - only parts available"
+                item_data['identification_confidence'] = "no_complete_data"
+                return item_data
             elif analysis and analysis.get('error') == 'NO_EBAY_DATA':
                 logger.error("❌ EBAY API FAILED")
                 item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account."
@@ -1251,19 +1320,26 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             else:
                 item_data['profit_potential'] = f"${abs(profit):.2f} potential loss"
             
-            # Market insights
+            # Market insights - FIXED: Ensure all values are strings
             insights = []
             if user_keywords:
-                insights.append(f"Search prioritized by user input")
+                insights.append("Search prioritized by user input")
             else:
                 insights.append("Search based on AI analysis")
             
+            # Convert all values to strings
+            total_sold = str(market_analysis.get('total_sold_analyzed', 0))
+            avg_price_str = f"{market_analysis.get('average_price', 0):.2f}"
+            median_price_str = f"{market_analysis.get('median_price', 0):.2f}"
+            price_range_str = str(market_analysis.get('price_range', 'Unknown'))
+            confidence_str = str(market_analysis.get('confidence', 'unknown'))
+            
             insights.extend([
-                f"Based on {market_analysis['total_sold_analyzed']} actual eBay sales",
-                f"Average: ${market_analysis['average_price']:.2f}",
-                f"Median: ${market_analysis['median_price']:.2f}",
-                f"Range: {market_analysis['price_range']}",
-                f"Confidence: {market_analysis['confidence']}"
+                f"Based on {total_sold} actual COMPLETE eBay sales",
+                f"Average: ${avg_price_str}",
+                f"Median: ${median_price_str}",
+                f"Range: {price_range_str}",
+                f"Confidence: {confidence_str}"
             ])
             
             item_data['market_insights'] = ". ".join(insights)
@@ -1560,6 +1636,60 @@ async def shutdown_event():
     logger.info("🛑 Server shutdown")
 
 # ============= EBAY OAUTH ENDPOINTS =============
+@app.get("/debug/ebay-search/{keywords}")
+async def debug_ebay_search(keywords: str):
+    """Debug endpoint to see raw eBay search results"""
+    update_activity()
+    
+    token = get_ebay_token()
+    if not token:
+        return {"error": "No token available"}
+    
+    try:
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+        }
+        
+        params = {
+            'q': keywords,
+            'limit': '10',
+            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},soldItems'
+        }
+        
+        url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Extract key info from each item
+            items = []
+            for item in data.get('itemSummaries', [])[:10]:
+                items.append({
+                    'title': item.get('title', 'No title'),
+                    'price': item.get('price', {}).get('value', 'No price'),
+                    'condition': item.get('condition', 'No condition'),
+                    'item_id': item.get('itemId', 'No ID'),
+                    'category': item.get('categoryPath', 'No category')
+                })
+            
+            return {
+                "success": True,
+                "total_results": len(data.get('itemSummaries', [])),
+                "items": items,
+                "raw_response": data
+            }
+        else:
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": response.text[:500]
+            }
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.get("/ebay/oauth/start")
 async def get_ebay_auth_url():
@@ -1725,12 +1855,17 @@ async def get_ebay_token_endpoint(token_id: str):
     """Get eBay access token"""
     update_activity()
     
+    logger.info(f"🔑 Token request for: {token_id}")
+    
     try:
         token_data = ebay_oauth.get_user_token(token_id)
         
         if not token_data:
+            logger.error(f"❌ Token not found: {token_id}")
+            logger.info(f"   Available tokens: {list(ebay_oauth.tokens.keys())}")
             raise HTTPException(status_code=404, detail="Token not found")
         
+        logger.info(f"✅ Token found and valid")
         refresh_ebay_token_if_needed(token_id)
         
         return {
@@ -1741,8 +1876,67 @@ async def get_ebay_token_endpoint(token_id: str):
         }
         
     except Exception as e:
-        logger.error(f"Get token error: {e}")
+        logger.error(f"❌ Get token error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/ebay/oauth/status/{token_id}")
+async def get_token_status(token_id: str):
+    """Get status of a specific token"""
+    update_activity()
+    
+    logger.info(f"📋 Token status check for: {token_id}")
+    
+    try:
+        token_data = ebay_oauth.get_user_token(token_id)
+        
+        if not token_data:
+            logger.warning(f"⚠️ Token {token_id} not found in storage")
+            # Check if we have any tokens at all
+            available_tokens = list(ebay_oauth.tokens.keys())
+            logger.info(f"   Available tokens: {available_tokens}")
+            
+            # Try to get from environment as fallback
+            env_token = os.getenv('EBAY_AUTH_TOKEN')
+            if env_token:
+                logger.info("   Found token in environment")
+                return {
+                    "valid": True,
+                    "expires_at": "Unknown (from env)",
+                    "seconds_remaining": 3600,
+                    "refreshable": False,
+                    "message": "Token from environment",
+                    "source": "environment"
+                }
+            
+            return {
+                "valid": False,
+                "error": f"Token {token_id} not found",
+                "available_tokens": available_tokens
+            }
+        
+        # Check expiration
+        expires_at = datetime.fromisoformat(token_data["expires_at"])
+        time_remaining = expires_at - datetime.now()
+        seconds_remaining = time_remaining.total_seconds()
+        
+        valid = seconds_remaining > 300  # 5 minutes buffer
+        
+        return {
+            "valid": valid,
+            "expires_at": token_data["expires_at"],
+            "seconds_remaining": int(seconds_remaining),
+            "refreshable": "refresh_token" in token_data,
+            "message": "Valid token" if valid else "Token expiring soon",
+            "source": "oauth_storage"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Token status error: {e}")
+        return {
+            "valid": False,
+            "error": str(e),
+            "message": "Error checking token status"
+        }
 
 @app.delete("/ebay/oauth/token/{token_id}")
 async def revoke_ebay_token(token_id: str):
@@ -1761,6 +1955,70 @@ async def revoke_ebay_token(token_id: str):
     except Exception as e:
         logger.error(f"Revoke error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============= DEBUG ENDPOINTS =============
+@app.get("/debug/ebay-raw/{keywords}")
+async def debug_ebay_raw(keywords: str):
+    """Debug endpoint to see EXACTLY what eBay returns"""
+    update_activity()
+    
+    token = get_ebay_token()
+    if not token:
+        return {"error": "No token available"}
+    
+    try:
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+        }
+        
+        params = {
+            'q': keywords,
+            'limit': '20',
+            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},soldItems'
+        }
+        
+        url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Log EVERY item for debugging
+            items = []
+            for i, item in enumerate(data.get('itemSummaries', [])):
+                price = item.get('price', {}).get('value', 'No price')
+                title = item.get('title', 'No title')
+                condition = item.get('condition', 'No condition')
+                
+                items.append({
+                    'index': i,
+                    'title': title,
+                    'price': price,
+                    'condition': condition,
+                    'item_id': item.get('itemId', 'No ID'),
+                    'buying_options': item.get('buyingOptions', [])
+                })
+            
+            return {
+                "success": True,
+                "total_results": len(data.get('itemSummaries', [])),
+                "items": items,
+                "query_used": keywords,
+                "token_available": True
+            }
+        else:
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": response.text[:500],
+                "headers_sent": str(headers)[:200]
+            }
+            
+    except Exception as e:
+        logger.error(f"Debug error: {e}")
+        return {"success": False, "error": str(e)}
 
 # ============= MAIN ENDPOINTS =============
 
@@ -1900,7 +2158,8 @@ async def root():
         "version": "4.0.0",
         "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required",
         "features": [
-            "Real eBay sold item data only",
+            "Real eBay COMPLETE sold item data only",
+            "Parts/incomplete listings filtered out",
             "Era detection (Victorian, Mid-Century, etc.)",
             "Rare item database (coins, stamps, cards)",
             "Proper search patterns (Year Brand Model)",
