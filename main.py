@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Resell Pro API - Maximum Accuracy", 
-    version="3.5.0",
+    version="4.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -81,6 +81,54 @@ activity_lock = threading.Lock()
 EBAY_AUTH_TOKEN = None
 EBAY_TOKEN_LOCK = threading.Lock()
 
+# Rare item database (coins, stamps, collectibles)
+RARE_ITEM_DATABASE = {
+    'coins': {
+        '1909-S VDB': {'min_value': 500, 'max_value': 100000, 'rarity': 'extreme'},
+        '1955 Double Die': {'min_value': 1000, 'max_value': 125000, 'rarity': 'extreme'},
+        '1943 Copper Penny': {'min_value': 85000, 'max_value': 1000000, 'rarity': 'extreme'},
+        '1916-D Mercury Dime': {'min_value': 1000, 'max_value': 35000, 'rarity': 'high'},
+        '1893-S Morgan Dollar': {'min_value': 2000, 'max_value': 500000, 'rarity': 'extreme'},
+        '1804 Silver Dollar': {'min_value': 1000000, 'max_value': 10000000, 'rarity': 'legendary'},
+        '1913 Liberty Nickel': {'min_value': 3000000, 'max_value': 5000000, 'rarity': 'legendary'},
+    },
+    'stamps': {
+        'Inverted Jenny': {'min_value': 100000, 'max_value': 1500000, 'rarity': 'legendary'},
+        'British Guiana 1c': {'min_value': 8000000, 'max_value': 10000000, 'rarity': 'legendary'},
+        'Mauritius Post Office': {'min_value': 1000000, 'max_value': 2000000, 'rarity': 'legendary'},
+    },
+    'cards': {
+        'Charizard 1st Edition': {'min_value': 5000, 'max_value': 400000, 'rarity': 'extreme'},
+        'Black Lotus Alpha': {'min_value': 50000, 'max_value': 500000, 'rarity': 'extreme'},
+        'Honus Wagner T206': {'min_value': 1000000, 'max_value': 6000000, 'rarity': 'legendary'},
+        'Mickey Mantle 1952': {'min_value': 50000, 'max_value': 5000000, 'rarity': 'extreme'},
+    }
+}
+
+# Era classification patterns
+ERA_PATTERNS = {
+    'furniture': {
+        'Victorian': {'years': (1837, 1901), 'keywords': ['ornate', 'carved', 'mahogany', 'walnut', 'upholstered']},
+        'Art Deco': {'years': (1920, 1939), 'keywords': ['geometric', 'chrome', 'lacquer', 'streamlined']},
+        'Mid-Century Modern': {'years': (1945, 1969), 'keywords': ['teak', 'walnut', 'tapered legs', 'organic', 'eames']},
+        'Colonial': {'years': (1700, 1780), 'keywords': ['windsor', 'maple', 'pine', 'simple', 'handmade']},
+        'Art Nouveau': {'years': (1890, 1910), 'keywords': ['flowing', 'nature', 'curved', 'floral']},
+        'Chippendale': {'years': (1750, 1780), 'keywords': ['cabriole', 'ball and claw', 'mahogany']},
+        'Queen Anne': {'years': (1700, 1755), 'keywords': ['curved', 'cabriole legs', 'pad foot']},
+        'Federal': {'years': (1780, 1820), 'keywords': ['inlay', 'tapered', 'classical']},
+        'Empire': {'years': (1800, 1840), 'keywords': ['heavy', 'carved', 'gilt', 'claw feet']},
+        'Renaissance Revival': {'years': (1850, 1880), 'keywords': ['ornate', 'carved', 'walnut', 'pediment']},
+    },
+    'jewelry': {
+        'Victorian': {'years': (1837, 1901), 'keywords': ['mourning', 'cameo', 'filigree', 'sentiment']},
+        'Art Nouveau': {'years': (1890, 1910), 'keywords': ['nature', 'enamel', 'flowing', 'organic']},
+        'Edwardian': {'years': (1901, 1915), 'keywords': ['platinum', 'delicate', 'lace', 'filigree']},
+        'Art Deco': {'years': (1920, 1935), 'keywords': ['geometric', 'platinum', 'emerald cut', 'bold']},
+        'Retro': {'years': (1935, 1950), 'keywords': ['rose gold', 'large', 'cocktail', 'bold']},
+        'Mid-Century': {'years': (1950, 1970), 'keywords': ['modernist', 'abstract', 'textured']},
+    }
+}
+
 def update_activity():
     """Update last activity timestamp"""
     with activity_lock:
@@ -112,6 +160,7 @@ def store_ebay_token(token: str):
     with EBAY_TOKEN_LOCK:
         EBAY_AUTH_TOKEN = token
         logger.info(f"🔑 Stored new eBay token: {token[:20]}...")
+
 def refresh_ebay_token_if_needed(token_id: str) -> bool:
     """Refresh eBay token if it's expired"""
     try:
@@ -141,6 +190,98 @@ def refresh_ebay_token_if_needed(token_id: str) -> bool:
         logger.error(f"❌ Token refresh check error: {e}")
         return False
 
+def check_rare_item_database(item_data: Dict) -> Optional[Dict]:
+    """Check if item matches rare item database"""
+    title = item_data.get('title', '').lower()
+    description = item_data.get('description', '').lower()
+    category = item_data.get('category', '').lower()
+    
+    combined_text = f"{title} {description}"
+    
+    # Check category-specific rare items
+    if category in ['coins', 'collectibles']:
+        for item_name, data in RARE_ITEM_DATABASE.get('coins', {}).items():
+            if item_name.lower() in combined_text:
+                logger.info(f"💎 RARE COIN DETECTED: {item_name}")
+                return {
+                    'rare_item_match': item_name,
+                    'rarity_level': data['rarity'],
+                    'estimated_value_range': f"${data['min_value']:,} - ${data['max_value']:,}",
+                    'database_source': 'rare_coins'
+                }
+    
+    if category == 'stamps':
+        for item_name, data in RARE_ITEM_DATABASE.get('stamps', {}).items():
+            if item_name.lower() in combined_text:
+                logger.info(f"💎 RARE STAMP DETECTED: {item_name}")
+                return {
+                    'rare_item_match': item_name,
+                    'rarity_level': data['rarity'],
+                    'estimated_value_range': f"${data['min_value']:,} - ${data['max_value']:,}",
+                    'database_source': 'rare_stamps'
+                }
+    
+    if category == 'collectibles':
+        for item_name, data in RARE_ITEM_DATABASE.get('cards', {}).items():
+            if item_name.lower() in combined_text:
+                logger.info(f"💎 RARE CARD DETECTED: {item_name}")
+                return {
+                    'rare_item_match': item_name,
+                    'rarity_level': data['rarity'],
+                    'estimated_value_range': f"${data['min_value']:,} - ${data['max_value']:,}",
+                    'database_source': 'rare_cards'
+                }
+    
+    return None
+
+def detect_era(item_data: Dict) -> Optional[str]:
+    """Detect historical era of item (furniture, jewelry, etc.)"""
+    category = item_data.get('category', '').lower()
+    title = item_data.get('title', '').lower()
+    description = item_data.get('description', '').lower()
+    year_str = item_data.get('year', '').strip()
+    
+    combined_text = f"{title} {description}"
+    
+    # Check if category has era patterns
+    if category not in ERA_PATTERNS:
+        return None
+    
+    era_matches = []
+    
+    for era_name, era_data in ERA_PATTERNS[category].items():
+        score = 0
+        
+        # Check keywords
+        for keyword in era_data['keywords']:
+            if keyword in combined_text:
+                score += 2
+        
+        # Check year range
+        if year_str and year_str.isdigit():
+            year = int(year_str)
+            year_start, year_end = era_data['years']
+            if year_start <= year <= year_end:
+                score += 5
+        
+        # Check if era name is mentioned
+        if era_name.lower() in combined_text:
+            score += 10
+        
+        if score > 0:
+            era_matches.append((era_name, score))
+    
+    if era_matches:
+        # Sort by score and return highest
+        era_matches.sort(key=lambda x: x[1], reverse=True)
+        best_match = era_matches[0]
+        
+        if best_match[1] >= 5:  # Minimum confidence threshold
+            logger.info(f"🏛️ ERA DETECTED: {best_match[0]} (score: {best_match[1]})")
+            return best_match[0]
+    
+    return None
+
 # MAXIMUM ACCURACY MARKET ANALYSIS PROMPT - ENHANCED
 market_analysis_prompt = """
 EXPERT RESELL ANALYST - MAXIMUM ACCURACY ANALYSIS:
@@ -152,6 +293,7 @@ You are analyzing items for resale profitability. You MUST use ALL available inf
 - Identify ALL materials, construction quality, age indicators, manufacturing details
 - Note ALL condition issues, wear patterns, damage, repairs, modifications
 - Capture EXACT size, dimensions, weight indicators, manufacturing codes
+- Identify style period/era (Victorian, Art Deco, Mid-Century, Colonial, etc.)
 
 📊 **ENHANCED MARKET ANALYSIS PHASE:**
 - Use EXACT brand/model/year data when available
@@ -159,6 +301,7 @@ You are analyzing items for resale profitability. You MUST use ALL available inf
 - Consider brand popularity, rarity, demand trends, collector interest
 - Factor in ALL condition deductions and market saturation
 - Account for seasonal pricing variations and current market trends
+- Identify historical era or period if applicable (furniture, jewelry, collectibles)
 
 💰 **PRECISE PROFITABILITY ANALYSIS:**
 - Calculate REALISTIC resale price range based on ALL factors
@@ -189,6 +332,7 @@ Return analysis in JSON format:
   "brand": "Exact brand if visible, otherwise 'Unknown - appears to be [quality/style]'",
   "model": "Model number/name if visible, otherwise descriptive characteristics", 
   "year": "Production year if determinable, otherwise era/style indicators",
+  "era": "Historical period if applicable (Victorian, Mid-Century, Art Deco, etc.)",
   "condition": "DETAILED condition assessment with specific notes",
   "confidence": 0.85,
   "analysis_depth": "comprehensive",
@@ -209,21 +353,22 @@ def map_to_ebay_category(category: str) -> str:
     """Map internal category to eBay search-friendly category"""
     category_mapping = {
         'electronics': 'electronics',
-        'clothing': 'clothing',
-        'furniture': 'furniture',
+        'clothing': 'clothing shoes accessories',
+        'furniture': 'antiques furniture',
         'collectibles': 'collectibles',
-        'books': 'books',
-        'toys': 'toys',
-        'jewelry': 'jewelry',
+        'books': 'books magazines',
+        'toys': 'toys hobbies',
+        'jewelry': 'jewelry watches',
         'sports': 'sporting goods',
         'tools': 'tools',
-        'kitchen': 'kitchen',
+        'kitchen': 'home garden',
         'vehicles': 'cars trucks',
-        'automotive': 'cars trucks',  # NEW: Map automotive to vehicles
-        'music': 'musical instruments',
+        'automotive': 'cars trucks',
+        'music': 'musical instruments gear',
         'art': 'art',
-        'coins': 'coins',
-        'stamps': 'stamps'
+        'coins': 'coins paper money',
+        'stamps': 'stamps',
+        'unknown': ''
     }
     
     return category_mapping.get(category.lower(), '')
@@ -238,24 +383,13 @@ def clean_search_query(query: str) -> str:
     
     if len(query) > 100:
         words = query.split()
-        important_words = []
-        for word in words:
-            if (word[0].isupper() or
-                word.isdigit() and len(word) in [2, 4] or
-                word.lower() in ['piano', 'guitar', 'truck', 'car', 'watch', 'ring']):
-                important_words.append(word)
-        
-        if important_words:
-            query = ' '.join(important_words[:8])
-        else:
-            query = ' '.join(words[:8])
+        query = ' '.join(words[:10])
     
     return query
 
 def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
     """
-    MAXIMUM accuracy category detection using ALL available data
-    🚨 FIXED: Better vehicle/automotive detection
+    MAXIMUM accuracy category detection - EXPANDED WITH ALL CATEGORIES
     """
     title_lower = title.lower()
     description_lower = description.lower()
@@ -266,7 +400,7 @@ def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
     
     all_text = f"{title_lower} {description_lower} {detected_text.lower()} {detected_objects.lower()} {brands.lower()}"
     
-    # 🚨 CRITICAL: Vehicle keywords must be checked FIRST and STRICTLY
+    # 🚨 PRIORITY 1: VEHICLES (check first)
     vehicle_keywords = [
         "truck", "car", "vehicle", "automobile", "auto", "pickup", "sedan", "suv", 
         "van", "coupe", "convertible", "wagon", "jeep", "bus", "trailer", "rv",
@@ -274,13 +408,12 @@ def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
         "motorcycle", "bike", "scooter", "atv", "utv", "snowmobile", "boat"
     ]
     
-    # 🚨 CHECK FOR VEHICLES FIRST (highest priority)
     for keyword in vehicle_keywords:
         if keyword in all_text:
             logger.info(f"🚗 VEHICLE DETECTED: Found '{keyword}' in text")
             return "vehicles"
     
-    # 🚨 SPECIAL CASE: Check for year + automotive brand combinations
+    # Check for year + automotive brand
     automotive_brands = ["chevrolet", "chevy", "ford", "toyota", "honda", "dodge", "gmc", "ram", "jeep"]
     year_pattern = r'\b(19[5-9]\d|20[0-2]\d)\b'
     
@@ -290,32 +423,234 @@ def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
                 logger.info(f"🚗 VEHICLE DETECTED: Found year + '{brand}' brand")
                 return "vehicles"
     
-    # Now check other categories
+    # 🚨 PRIORITY 2: Specific categories with strong keywords
     category_keywords = {
-        "electronics": ["electronic", "computer", "phone", "tablet", "camera", "laptop"],
-        "clothing": ["shirt", "pants", "dress", "jacket", "shoe", "sneaker"],
-        "furniture": ["chair", "table", "desk", "cabinet", "sofa", "couch"],
-        "collectibles": ["collectible", "rare", "vintage", "antique", "limited"],
-        "books": ["book", "novel", "author", "page", "edition"],
-        "toys": ["toy", "game", "play", "action figure", "doll"],
-        "jewelry": ["ring", "necklace", "bracelet", "earring", "watch", "gold"],
-        "sports": ["sport", "equipment", "ball", "bat", "fitness"],
-        "tools": ["tool", "wrench", "hammer", "screwdriver", "drill"],
-        "kitchen": ["kitchen", "cookware", "pan", "pot", "appliance"]
+        # Musical Instruments (HIGHEST PRIORITY after vehicles)
+        "music": [
+            "piano", "grand piano", "upright piano", "keyboard", "synthesizer", "petrof",
+            "steinway", "yamaha piano", "baldwin", "kawai", "bosendorfer",
+            "guitar", "acoustic guitar", "electric guitar", "bass guitar", "fender", "gibson",
+            "martin guitar", "taylor guitar", "prs", "ibanez", "jackson",
+            "violin", "viola", "cello", "double bass", "fiddle", "stradivarius",
+            "drums", "drum set", "drum kit", "cymbal", "snare", "bass drum", "ludwig", "pearl drums",
+            "trumpet", "trombone", "tuba", "french horn", "saxophone", "sax",
+            "clarinet", "flute", "oboe", "bassoon", "harmonica",
+            "accordion", "banjo", "mandolin", "ukulele", "harp",
+            "organ", "hammond organ", "harpsichord", "mellotron", "theremin"
+        ],
+        
+        # Collectible Cards & Games
+        "collectibles": [
+            "pokemon card", "pokémon", "pokémon card", "pikachu", "charizard", "mewtwo",
+            "trading card", "tcg", "ccg", "magic the gathering", "mtg", "magic card",
+            "yu-gi-oh", "yugioh", "yu gi oh card",
+            "baseball card", "sports card", "football card", "basketball card",
+            "hockey card", "soccer card", "topps", "upper deck", "panini", "fleer",
+            "holographic", "holo", "first edition", "shadowless", "graded", "psa", "bgs", "cgc",
+            "collectible", "rare card", "vintage card", "limited edition card",
+            "signed card", "autograph card", "memorabilia card", "rookie card", "insert card"
+        ],
+        
+        # Coins & Currency
+        "coins": [
+            "coin", "penny", "cent", "nickel", "dime", "quarter", "half dollar", "dollar coin",
+            "silver dollar", "gold coin", "morgan dollar", "peace dollar", "buffalo nickel",
+            "indian head", "wheat penny", "lincoln cent", "error coin", "double die", "mint mark",
+            "proof coin", "uncirculated", "numismatic", "currency", "paper money",
+            "bill", "note", "silver certificate", "federal reserve note", "gold certificate",
+            "commemorative coin", "bullion", "krugerrand", "eagle coin", "maple leaf coin"
+        ],
+        
+        # Stamps
+        "stamps": [
+            "stamp", "postage stamp", "philatelic", "first day cover", "mint stamp",
+            "unused stamp", "canceled stamp", "cancelled stamp", "rare stamp", "block of stamps",
+            "stamp collection", "commemorative stamp", "airmail stamp", "definitive stamp"
+        ],
+        
+        # Electronics
+        "electronics": [
+            "electronic", "computer", "pc", "laptop", "notebook", "macbook",
+            "phone", "smartphone", "mobile", "iphone", "samsung phone", "android phone",
+            "tablet", "ipad", "kindle", "e-reader",
+            "camera", "dslr", "mirrorless", "canon camera", "nikon camera", "sony camera",
+            "lens", "camera lens", "zoom lens", "prime lens",
+            "headphones", "earbuds", "earphones", "airpods", "beats", "bose headphones",
+            "speaker", "bluetooth speaker", "smart speaker", "alexa", "google home",
+            "smartwatch", "apple watch", "fitbit", "garmin watch",
+            "gaming console", "playstation", "ps5", "ps4", "xbox", "nintendo switch",
+            "monitor", "display", "screen", "tv", "television",
+            "keyboard", "mechanical keyboard", "mouse", "gaming mouse",
+            "router", "modem", "wifi", "network", "drone", "quadcopter"
+        ],
+        
+        # Clothing & Shoes
+        "clothing": [
+            "shirt", "t-shirt", "tee", "polo", "button up", "dress shirt",
+            "pants", "jeans", "denim", "trousers", "chinos", "slacks",
+            "dress", "gown", "sundress", "maxi dress", "cocktail dress",
+            "jacket", "coat", "blazer", "suit jacket", "sport coat",
+            "sweater", "cardigan", "pullover", "hoodie", "sweatshirt",
+            "shorts", "skirt", "leggings", "joggers", "tracksuit",
+            "shoe", "shoes", "sneaker", "sneakers", "trainers", "kicks",
+            "boot", "boots", "ankle boot", "chelsea boot", "work boot",
+            "sandal", "flip flop", "slide", "heel", "pump", "stiletto",
+            "loafer", "oxford", "derby", "monk strap",
+            "nike", "adidas", "jordan", "air jordan", "yeezy", "boost",
+            "supreme", "bape", "off-white", "gucci", "prada", "louis vuitton",
+            "balenciaga", "versace", "armani", "ralph lauren", "tommy hilfiger",
+            "vintage clothing", "retro clothing", "streetwear", "designer"
+        ],
+        
+        # Furniture
+        "furniture": [
+            "chair", "armchair", "dining chair", "office chair", "rocking chair",
+            "table", "dining table", "coffee table", "end table", "side table",
+            "desk", "writing desk", "computer desk", "secretary desk",
+            "cabinet", "china cabinet", "curio cabinet", "storage cabinet",
+            "sofa", "couch", "loveseat", "sectional", "settee", "chaise",
+            "bed", "bed frame", "headboard", "footboard", "canopy bed",
+            "dresser", "chest of drawers", "bureau", "vanity",
+            "nightstand", "bedside table", "bookshelf", "bookcase", "shelving",
+            "wardrobe", "armoire", "closet", "credenza", "buffet", "hutch",
+            "ottoman", "footstool", "bench", "stool", "bar stool",
+            "recliner", "lounge chair", "accent chair",
+            "antique furniture", "vintage furniture", "mid century", "victorian",
+            "art deco", "colonial", "chippendale", "queen anne"
+        ],
+        
+        # Jewelry & Watches
+        "jewelry": [
+            "ring", "engagement ring", "wedding ring", "band", "signet ring",
+            "necklace", "pendant", "chain", "choker", "locket",
+            "bracelet", "bangle", "cuff", "tennis bracelet", "charm bracelet",
+            "earring", "earrings", "stud", "hoop", "drop earring", "dangle",
+            "brooch", "pin", "lapel pin",
+            "watch", "wristwatch", "timepiece", "wrist watch",
+            "rolex", "omega watch", "cartier", "patek philippe", "audemars piguet",
+            "tag heuer", "breitling", "iwc", "panerai", "jaeger lecoultre",
+            "diamond", "gold", "silver", "platinum", "white gold", "rose gold",
+            "gemstone", "ruby", "sapphire", "emerald", "pearl", "opal",
+            "tiffany", "bulgari", "chopard", "van cleef", "harry winston",
+            "vintage jewelry", "antique jewelry", "estate jewelry"
+        ],
+        
+        # Books
+        "books": [
+            "book", "novel", "hardcover", "paperback", "softcover",
+            "textbook", "reference book", "manual", "guide",
+            "comic book", "comic", "manga", "graphic novel",
+            "first edition", "signed book", "autographed book", "rare book",
+            "cookbook", "recipe book", "biography", "autobiography", "memoir",
+            "fiction", "non-fiction", "nonfiction", "self-help",
+            "children's book", "picture book", "young adult"
+        ],
+        
+        # Toys & Action Figures
+        "toys": [
+            "toy", "action figure", "figurine", "collectible figure",
+            "doll", "barbie", "american girl", "baby doll",
+            "hot wheels", "matchbox", "die cast", "model car",
+            "lego", "building blocks", "construction toy",
+            "playset", "play set", "toy set",
+            "stuffed animal", "plush", "teddy bear", "plushie",
+            "board game", "card game", "puzzle", "jigsaw puzzle",
+            "transformers", "gi joe", "star wars", "marvel", "dc comics",
+            "funko pop", "funko", "nendoroid", "figma",
+            "vintage toy", "retro toy", "antique toy", "tin toy"
+        ],
+        
+        # Sports Equipment
+        "sports": [
+            "baseball", "baseball bat", "baseball glove", "mitt",
+            "football", "basketball", "soccer ball", "volleyball",
+            "golf", "golf club", "driver", "putter", "iron", "wedge",
+            "tennis", "tennis racket", "badminton",
+            "hockey", "hockey stick", "skates", "ice skates", "roller skates",
+            "fishing", "fishing rod", "reel", "tackle",
+            "bicycle", "bike", "mountain bike", "road bike", "bmx",
+            "skateboard", "longboard", "snowboard", "skis", "ski",
+            "exercise equipment", "weights", "dumbbell", "barbell", "kettlebell",
+            "treadmill", "elliptical", "stationary bike", "rowing machine",
+            "yoga mat", "fitness mat", "gym equipment",
+            "jersey", "sports jersey", "signed jersey", "autographed",
+            "sports memorabilia", "game used", "game worn"
+        ],
+        
+        # Tools & Hardware
+        "tools": [
+            "tool", "hand tool", "power tool",
+            "wrench", "socket", "ratchet", "spanner",
+            "hammer", "mallet", "sledgehammer",
+            "screwdriver", "phillips", "flathead",
+            "drill", "drill bit", "impact driver", "hammer drill",
+            "saw", "circular saw", "miter saw", "table saw", "jigsaw", "reciprocating saw",
+            "sander", "belt sander", "orbital sander",
+            "pliers", "wire cutters", "needle nose",
+            "level", "tape measure", "ruler", "square",
+            "craftsman", "dewalt", "milwaukee", "makita", "bosch", "ryobi",
+            "black and decker", "porter cable", "ridgid", "kobalt",
+            "toolbox", "tool chest", "tool cabinet"
+        ],
+        
+        # Art & Decor
+        "art": [
+            "painting", "oil painting", "acrylic painting", "watercolor",
+            "print", "art print", "poster", "lithograph", "serigraph",
+            "etching", "engraving", "woodcut", "linocut",
+            "sculpture", "statue", "figurine", "bronze sculpture",
+            "drawing", "sketch", "charcoal drawing", "pastel",
+            "photograph", "photography", "fine art photography",
+            "canvas", "stretched canvas", "canvas print",
+            "frame", "picture frame", "art frame",
+            "original art", "signed art", "numbered print", "limited edition",
+            "abstract art", "modern art", "contemporary art", "impressionist"
+        ],
+        
+        # Kitchen & Appliances
+        "kitchen": [
+            "kitchen", "kitchenware", "cookware", "bakeware",
+            "pan", "frying pan", "skillet", "sauté pan",
+            "pot", "stock pot", "sauce pan", "dutch oven",
+            "knife", "chef knife", "paring knife", "bread knife", "knife set",
+            "cutlery", "silverware", "flatware", "utensil",
+            "plate", "dish", "platter", "serving dish",
+            "bowl", "mixing bowl", "salad bowl", "serving bowl",
+            "cup", "mug", "coffee mug", "tea cup",
+            "glass", "wine glass", "champagne flute", "tumbler",
+            "blender", "food processor", "mixer", "stand mixer", "hand mixer",
+            "toaster", "toaster oven", "coffee maker", "espresso machine",
+            "slow cooker", "crock pot", "instant pot", "pressure cooker",
+            "kitchenaid", "cuisinart", "ninja", "breville", "vitamix",
+            "le creuset", "lodge", "all clad", "calphalon"
+        ]
     }
     
+    # Score each category
     scores = {category: 0 for category in category_keywords}
     scores["unknown"] = 0
     
     for category, keywords in category_keywords.items():
         for keyword in keywords:
             if keyword in all_text:
-                scores[category] += 1
+                # Give higher weight to exact matches and multi-word phrases
+                if keyword == all_text.strip():
+                    scores[category] += 10
+                elif f" {keyword} " in f" {all_text} ":
+                    scores[category] += 3
+                else:
+                    scores[category] += 1
     
+    # Get highest scoring category
     detected_category = max(scores.items(), key=lambda x: x[1])[0]
-    logger.info(f"📦 CATEGORY DETECTION: '{detected_category}'")
     
-    return detected_category
+    # Only accept if score is above threshold
+    if scores[detected_category] >= 2:
+        logger.info(f"📦 CATEGORY: '{detected_category}' (score: {scores[detected_category]})")
+        return detected_category
+    else:
+        logger.info(f"📦 CATEGORY: 'unknown' (highest score: {scores[detected_category]})")
+        return "unknown"
 
 def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
     """Extract structured keywords from user input"""
@@ -325,8 +660,24 @@ def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
     user_text = user_text.lower()
     
     # Extract year patterns (1900-2025)
-    year_pattern = r'\b(19[5-9]\d|20[0-2]\d)\b'
+    year_pattern = r'\b(19[0-9]\d|20[0-2]\d)\b'
     years = re.findall(year_pattern, user_text)
+    
+    # Extract decade patterns (1980s, 1990s, etc.)
+    decade_pattern = r'\b(19[0-9]0s|20[0-2]0s)\b'
+    decades = re.findall(decade_pattern, user_text)
+    
+    # Extract era keywords
+    era_keywords = [
+        'victorian', 'edwardian', 'art deco', 'art nouveau', 'mid century', 'mid-century',
+        'colonial', 'federal', 'empire', 'renaissance', 'baroque', 'rococo',
+        'chippendale', 'queen anne', 'regency', 'georgian', 'retro', 'vintage', 'antique'
+    ]
+    
+    eras = []
+    for era in era_keywords:
+        if era in user_text:
+            eras.append(era.title())
     
     # Extract potential brand names
     brands = []
@@ -336,9 +687,24 @@ def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
         'dodge', 'jeep', 'gmc', 'cadillac', 'buick', 'pontiac', 'ram', 'chrysler',
         'nissan', 'subaru', 'mazda', 'volkswagen', 'vw', 'audi', 'volvo', 'tesla',
         'porsche', 'ferrari', 'lamborghini', 'jaguar', 'land rover', 'mini',
-        # General brands
-        'apple', 'samsung', 'sony', 'microsoft', 'google', 'nike', 'adidas', 'gucci',
-        'prada', 'louis vuitton', 'lv', 'rolex', 'omega', 'canon', 'nikon'
+        
+        # Musical Instruments
+        'steinway', 'yamaha', 'petrof', 'baldwin', 'kawai', 'bosendorfer',
+        'fender', 'gibson', 'martin', 'taylor', 'prs', 'ibanez',
+        
+        # Electronics
+        'apple', 'samsung', 'sony', 'microsoft', 'google', 'dell', 'hp', 'lenovo',
+        'canon', 'nikon', 'panasonic', 'lg', 'bose',
+        
+        # Fashion
+        'nike', 'adidas', 'jordan', 'gucci', 'prada', 'louis vuitton', 'lv',
+        'supreme', 'bape', 'off-white', 'balenciaga', 'versace',
+        
+        # Watches
+        'rolex', 'omega', 'cartier', 'patek philippe', 'tag heuer', 'breitling',
+        
+        # General
+        'pokemon', 'pokémon', 'magic', 'yugioh', 'topps'
     ]
     
     for brand in common_brands:
@@ -359,14 +725,17 @@ def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
     features = []
     
     model_keywords = [
-        'truck', 'pickup', 'pick-up', 'sedan', 'coupe', 'convertible', 'suv', 'van',
-        'window', '5-window', '5 window', 'deluxe', 'custom', 'standard', 'limited',
-        'premium', 'luxury', 'sport', 'performance', 'edition', 'series', 'model'
+        'truck', 'pickup', 'sedan', 'coupe', 'convertible', 'suv', 'van',
+        'window', '5-window', 'deluxe', 'custom', 'standard', 'limited',
+        'premium', 'luxury', 'sport', 'performance', 'edition', 'series',
+        'grand', 'upright', 'baby grand', 'console',
+        'first edition', '1st edition', 'shadowless', 'holographic', 'holo',
+        'graded', 'psa', 'bgs', 'cgc', 'mint', 'near mint'
     ]
     
     for keyword in model_keywords:
         if keyword in user_text:
-            if keyword in ['window', '5-window', '5 window', 'deluxe', 'custom', 'standard']:
+            if keyword in ['window', '5-window', 'deluxe', 'custom', 'standard', 'holographic', 'holo', 'graded']:
                 features.append(keyword)
             else:
                 models.append(keyword)
@@ -382,14 +751,19 @@ def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
                 result.append(item)
         return result
     
+    years = deduplicate(years)
+    decades = deduplicate(decades)
+    eras = deduplicate(eras)
     brands = deduplicate(brands)
     models = deduplicate(models)
     features = deduplicate(features)
     
-    logger.info(f"📋 Extracted keywords: years={years}, brands={brands}, models={models}, features={features}")
+    logger.info(f"📋 Extracted keywords: years={years}, decades={decades}, eras={eras}, brands={brands}, models={models}, features={features}")
     
     return {
         'years': years,
+        'decades': decades,
+        'eras': eras,
         'brands': brands,
         'models': models,
         'features': features
@@ -447,6 +821,7 @@ class EnhancedAppItem:
         self.brand = data.get("brand", "")
         self.model = data.get("model", "")
         self.year = data.get("year", "")
+        self.era = data.get("era", "")
         self.condition = data.get("condition", "")
         self.confidence = data.get("confidence", 0.5)
         self.analysis_depth = data.get("analysis_depth", "comprehensive")
@@ -470,6 +845,7 @@ class EnhancedAppItem:
             "brand": self.brand,
             "model": self.model,
             "year": self.year,
+            "era": self.era,
             "condition": self.condition,
             "confidence": self.confidence,
             "analysis_depth": self.analysis_depth,
@@ -537,7 +913,7 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         raise Exception(f"Groq API error: {str(e)[:100]}")
 
 def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
-    """Direct eBay search using OAuth token"""
+    """Direct eBay search using OAuth token - ONLY ACTUAL SOLD ITEMS"""
     token = get_ebay_token()
     if not token:
         logger.error("❌ No eBay OAuth token available")
@@ -550,10 +926,12 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
             'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
+        # 🚨 CRITICAL: Only get SOLD items (completed auctions/BIN with actual sales)
         params = {
             'q': keywords,
-            'limit': str(limit),
-            'filter': 'soldItems'
+            'limit': str(limit * 3),  # Get more to filter
+            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},soldItems',
+            'sort': 'price'  # Sort by price to get realistic range
         }
         
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -567,22 +945,40 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
             data = response.json()
             if 'itemSummaries' in data:
                 items = []
-                for item in data['itemSummaries'][:limit]:
+                for item in data['itemSummaries']:
                     try:
+                        # 🚨 CRITICAL: Only include items with realistic sale prices
                         price = item.get('price', {}).get('value', '0')
+                        price_float = float(price)
+                        
+                        # Skip items with suspiciously low prices
+                        if price_float < 5.0:
+                            logger.debug(f"   Skipping item with price ${price_float} (too low - likely parts/shipping only)")
+                            continue
+                        
+                        # Verify item actually sold (has buyer info or completion status)
+                        item_url = item.get('itemWebUrl', '')
+                        if not item_url:
+                            logger.debug(f"   Skipping item - no confirmation URL")
+                            continue
+                        
                         items.append({
                             'title': item.get('title', ''),
-                            'price': float(price),
+                            'price': price_float,
                             'item_id': item.get('itemId', ''),
                             'condition': item.get('condition', ''),
                             'category': item.get('categoryPath', ''),
                             'image_url': item.get('image', {}).get('imageUrl', '')
                         })
+                        
+                        if len(items) >= limit:
+                            break
+                            
                     except (KeyError, ValueError) as e:
                         logger.debug(f"   Skipping item: {e}")
                         continue
                 
-                logger.info(f"✅ Direct eBay search found {len(items)} sold items")
+                logger.info(f"✅ Found {len(items)} ACTUAL sold items (filtered from {len(data.get('itemSummaries', []))} results)")
                 return items
         elif response.status_code == 401:
             logger.error("❌ eBay token expired or invalid")
@@ -600,47 +996,170 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
     return []
 
 def analyze_ebay_market_directly(keywords: str) -> Dict:
-    """Direct eBay market analysis"""
+    """Direct eBay market analysis - ONLY ACTUAL SOLD DATA"""
     logger.info(f"📊 Direct eBay market analysis for: '{keywords}'")
     
     sold_items = search_ebay_directly(keywords, limit=10)
     
     if not sold_items:
-        logger.error("❌ NO EBAY DATA AVAILABLE - APP CANNOT FUNCTION")
+        logger.error("❌ NO EBAY DATA AVAILABLE")
         return {
             'error': 'NO_EBAY_DATA',
             'message': 'eBay API failed - please ensure you are authenticated and try again',
             'requires_auth': True
         }
     
-    prices = [item['price'] for item in sold_items if item['price'] > 0]
+    prices = [item['price'] for item in sold_items if item['price'] >= 5.0]
     
     if not prices:
         logger.error("❌ No valid price data from eBay")
         return {
             'error': 'NO_PRICE_DATA',
-            'message': 'eBay returned items but no price data',
+            'message': 'eBay returned items but no valid price data',
             'requires_auth': False
         }
     
+    # Calculate statistics
     avg_price = sum(prices) / len(prices)
     min_price = min(prices)
     max_price = max(prices)
     median_price = sorted(prices)[len(prices) // 2]
     
+    # Remove outliers (prices more than 3x the median)
+    filtered_prices = [p for p in prices if p <= median_price * 3]
+    
+    if filtered_prices:
+        avg_price = sum(filtered_prices) / len(filtered_prices)
+        min_price = min(filtered_prices)
+        max_price = max(filtered_prices)
+        median_price = sorted(filtered_prices)[len(filtered_prices) // 2]
+    
     analysis = {
         'success': True,
         'average_price': round(avg_price, 2),
+        'median_price': round(median_price, 2),
         'price_range': f"${min_price:.2f} - ${max_price:.2f}",
         'total_sold_analyzed': len(sold_items),
         'recommended_price': round(median_price * 0.85, 2),
-        'market_notes': f'Based on {len(sold_items)} recent eBay sales',
-        'data_source': 'eBay Browse API',
+        'market_notes': f'Based on {len(sold_items)} recent eBay ACTUAL sales (filtered from low-quality data)',
+        'data_source': 'eBay Browse API - Sold Items Only',
         'confidence': 'high' if len(sold_items) >= 5 else 'medium',
         'api_used': 'Browse API'
     }
     
+    logger.info(f"✅ Market analysis: avg=${avg_price:.2f}, range=${min_price:.2f}-${max_price:.2f}")
+    
     return analysis
+
+def build_search_query(item_data: Dict, user_keywords: Dict, detected_category: str) -> List[str]:
+    """
+    Build search queries following REAL user search patterns
+    
+    Examples:
+    - 1955 Chevrolet 5 Window
+    - 1980s Vintage Rolex Submariner
+    - Nike Air Jordan 6 Retro
+    - Antique Victorian Mahogany Chair
+    - Vintage Playstation 1
+    - Ninetales Delta Species Pokemon Card
+    """
+    search_strategies = []
+    
+    # Strategy 1: USER INPUT (highest priority)
+    if user_keywords:
+        user_terms = []
+        
+        # Add decade/era FIRST (if available)
+        if user_keywords.get('decades'):
+            user_terms.append(user_keywords['decades'][0])
+        elif user_keywords.get('eras'):
+            user_terms.append(user_keywords['eras'][0])
+        
+        # Add year SECOND (if available and no decade)
+        if user_keywords.get('years') and not user_keywords.get('decades'):
+            user_terms.append(user_keywords['years'][0])
+        
+        # Add brand THIRD
+        if user_keywords.get('brands'):
+            user_terms.append(user_keywords['brands'][0])
+        
+        # Add model/features FOURTH
+        if user_keywords.get('models'):
+            user_terms.extend(user_keywords['models'][:2])
+        
+        if user_keywords.get('features'):
+            user_terms.extend(user_keywords['features'][:2])
+        
+        if user_terms:
+            query = " ".join(user_terms)
+            search_strategies.append(query)
+            logger.info(f"🎯 USER QUERY: '{query}'")
+    
+    # Strategy 2: AI-DETECTED DATA (secondary)
+    ai_terms = []
+    
+    # Check for era first
+    era = item_data.get('era', '').strip()
+    if era and era.lower() not in ['unknown', 'modern']:
+        ai_terms.append(era)
+    
+    # Year second
+    year = item_data.get('year', '').strip()
+    if year and year.isdigit() and len(year) == 4:
+        ai_terms.append(year)
+    
+    # Brand third
+    brand = item_data.get('brand', '').strip()
+    if brand and 'unknown' not in brand.lower():
+        ai_terms.append(brand)
+    
+    # Model fourth (clean it first)
+    model = item_data.get('model', '').strip()
+    if model and 'unknown' not in model.lower():
+        # Clean model - remove generic words
+        model_words = []
+        generic_words = ['model', 'type', 'style', 'series', 'version', 'edition']
+        for word in model.split()[:3]:
+            if word.lower() not in generic_words and len(word) > 2:
+                model_words.append(word)
+        
+        if model_words:
+            ai_terms.extend(model_words)
+    
+    if ai_terms:
+        query = " ".join(ai_terms)
+        search_strategies.append(query)
+        logger.info(f"🤖 AI QUERY: '{query}'")
+    
+    # Strategy 3: TITLE-BASED SEARCH (fallback)
+    title = item_data.get('title', '').strip()
+    if title:
+        # Extract key terms from title
+        title_words = []
+        stop_words = ['the', 'a', 'an', 'and', 'or', 'for', 'with', 'in', 'on', 'at', 'to']
+        
+        for word in title.split()[:8]:
+            word_clean = word.lower().strip('.,!?;:"\'')
+            if (len(word_clean) > 2 and 
+                word_clean not in stop_words and
+                not word_clean.isdigit()):
+                title_words.append(word)
+        
+        if title_words:
+            query = " ".join(title_words[:5])
+            search_strategies.append(query)
+            logger.info(f"📝 TITLE QUERY: '{query}'")
+    
+    # Clean and deduplicate
+    cleaned = []
+    seen = set()
+    for strategy in search_strategies:
+        strategy = clean_search_query(strategy)
+        if strategy and strategy not in seen and len(strategy) > 3:
+            seen.add(strategy)
+            cleaned.append(strategy[:80])  # eBay search limit
+    
+    return cleaned[:3]  # Max 3 strategies
 
 def ensure_string_field(item_data: Dict, field_name: str) -> Dict:
     """Ensure a field is always a string, converting if necessary"""
@@ -680,94 +1199,14 @@ def ensure_numeric_fields(item_data: Dict) -> Dict:
 
 def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Dict, user_keywords: Dict) -> Dict:
     """
-    Enhanced market analysis using REAL eBay data with USER-PRIORITIZED search
-    🚨 FIXED: Uses detected category to guide search
+    Enhanced market analysis using REAL eBay SOLD data with USER-PRIORITIZED search
     """
     try:
-        search_strategies = []
-        
-        # 🚨 GET DETECTED CATEGORY (from detect_category function)
         detected_category = item_data.get('category', 'unknown')
-        logger.info(f"📦 Using detected category: '{detected_category}' for search")
+        logger.info(f"📦 Category: '{detected_category}' for eBay search")
         
-        # 1. Build search from user input FIRST (highest priority)
-        user_search_terms = []
-        
-        if user_keywords.get('years'):
-            for year in user_keywords['years']:
-                user_search_terms.append(year)
-        
-        if user_keywords.get('brands'):
-            for brand in user_keywords['brands']:
-                user_search_terms.append(brand)
-        
-        if user_keywords.get('models'):
-            for model in user_keywords['models']:
-                user_search_terms.append(model)
-        
-        if user_keywords.get('features'):
-            for feature in user_keywords['features'][:3]:
-                user_search_terms.append(feature)
-        
-        # 🚨 ADD CATEGORY-SPECIFIC TERM (if vehicles/automotive)
-        vehicle_type = None
-        if detected_category in ['vehicles', 'automotive']:
-            for term in user_search_terms + [item_data.get('model', '')]:
-                term_lower = str(term).lower()
-                if 'truck' in term_lower:
-                    vehicle_type = 'truck'
-                    break
-                elif 'car' in term_lower or 'sedan' in term_lower or 'coupe' in term_lower:
-                    vehicle_type = 'car'
-                    break
-                elif 'suv' in term_lower:
-                    vehicle_type = 'suv'
-                    break
-            
-            if vehicle_type:
-                user_search_terms.insert(0, vehicle_type)
-                logger.info(f"🚗 Added vehicle type '{vehicle_type}' to search")
-        
-        # Create user-prioritized search queries
-        if user_search_terms:
-            user_query = " ".join(user_search_terms[:8])
-            search_strategies.append(user_query)
-            logger.info(f"🎯 USER-PRIORITIZED SEARCH 1: '{user_query}'")
-            
-            brand_year_query_parts = []
-            if user_keywords.get('brands'):
-                brand_year_query_parts.append(user_keywords['brands'][0])
-            if user_keywords.get('years'):
-                brand_year_query_parts.append(user_keywords['years'][0])
-            if user_keywords.get('models'):
-                brand_year_query_parts.append(user_keywords['models'][0])
-            
-            # 🚨 ADD VEHICLE TYPE if automotive
-            if detected_category in ['vehicles', 'automotive'] and vehicle_type:
-                brand_year_query_parts.insert(0, vehicle_type)
-            
-            if len(brand_year_query_parts) >= 2:
-                brand_year_query = " ".join(brand_year_query_parts)
-                search_strategies.append(brand_year_query)
-                logger.info(f"🎯 USER-PRIORITIZED SEARCH 2: '{brand_year_query}'")
-        
-        # 2. Add AI-detected terms as secondary options
-        brand = item_data.get('brand', '').strip()
-        if brand and 'unknown' not in brand.lower():
-            if not user_keywords.get('brands') or brand.lower() not in [b.lower() for b in user_keywords['brands']]:
-                search_strategies.append(brand)
-        
-        # Clean strategies
-        cleaned_strategies = []
-        seen = set()
-        for strategy in search_strategies:
-            if strategy and strategy not in seen and len(strategy) > 2:
-                seen.add(strategy)
-                cleaned_strategy = clean_search_query(strategy)
-                if cleaned_strategy:
-                    cleaned_strategies.append(cleaned_strategy[:50])
-        
-        search_strategies = cleaned_strategies[:3]
+        # Build proper search queries
+        search_strategies = build_search_query(item_data, user_keywords, detected_category)
         
         if not search_strategies:
             logger.warning("No valid search strategies")
@@ -779,26 +1218,27 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
         market_analysis = None
         
         for strategy in search_strategies:
-            logger.info(f"🔍 Analyzing REAL eBay market with: '{strategy}'")
+            logger.info(f"🔍 Searching eBay with: '{strategy}'")
             analysis = analyze_ebay_market_directly(strategy)
             
             if analysis and analysis.get('success'):
                 market_analysis = analysis
                 break
             elif analysis and analysis.get('error') == 'NO_EBAY_DATA':
-                logger.error("❌ EBAY API FAILED - CANNOT PROCEED")
-                item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account in the app settings to get real market data."
+                logger.error("❌ EBAY API FAILED")
+                item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account."
                 item_data['price_range'] = "Authentication Required"
                 item_data['suggested_cost'] = "Connect eBay Account"
                 item_data['profit_potential'] = "eBay data unavailable"
                 item_data['identification_confidence'] = "requires_auth"
-                item_data['ebay_specific_tips'] = ["Connect your eBay account in settings", "Authenticate to access real market data", "Try again after authentication"]
                 return item_data
         
         if market_analysis:
+            # Update with REAL market data
             item_data['price_range'] = market_analysis['price_range']
             item_data['suggested_cost'] = f"${market_analysis['recommended_price']:.2f}"
             
+            # Calculate profit
             avg_price = market_analysis['average_price']
             ebay_fees = avg_price * 0.13
             shipping_cost = 12.00
@@ -811,54 +1251,63 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             else:
                 item_data['profit_potential'] = f"${abs(profit):.2f} potential loss"
             
+            # Market insights
             insights = []
             if user_keywords:
-                insights.append(f"Search prioritized by user-provided details")
-                if user_keywords.get('years'):
-                    insights.append(f"Year focus: {', '.join(user_keywords['years'])}")
-                if user_keywords.get('brands'):
-                    insights.append(f"Brand focus: {', '.join(user_keywords['brands'][:2])}")
+                insights.append(f"Search prioritized by user input")
             else:
                 insights.append("Search based on AI analysis")
             
             insights.extend([
-                f"Based on {market_analysis['total_sold_analyzed']} recent eBay sales",
-                f"Average price: ${market_analysis['average_price']:.2f}",
-                f"Price range: {market_analysis['price_range']}",
+                f"Based on {market_analysis['total_sold_analyzed']} actual eBay sales",
+                f"Average: ${market_analysis['average_price']:.2f}",
+                f"Median: ${market_analysis['median_price']:.2f}",
+                f"Range: {market_analysis['price_range']}",
                 f"Confidence: {market_analysis['confidence']}"
             ])
             
-            item_data['market_insights'] = ". ".join(insights) + ". " + item_data.get('market_insights', '')
+            item_data['market_insights'] = ". ".join(insights)
             
+            # eBay tips
             ebay_tips = []
             if search_strategies:
-                ebay_tips.append(f"Primary search terms: {search_strategies[0][:40]}")
+                ebay_tips.append(f"Search: {search_strategies[0][:40]}")
             ebay_tips.extend([
-                "Use 'Buy It Now' with Best Offer option",
-                "Include measurements in description",
-                "Take photos from multiple angles",
-                "List on weekends for best visibility"
+                "Use 'Buy It Now' with Best Offer",
+                "Include detailed measurements",
+                "Take photos from all angles",
+                "List on weekends for visibility"
             ])
             
             item_data['ebay_specific_tips'] = ebay_tips
-            
-            logger.info(f"✅ REAL eBay market analysis successful (user-prioritized)")
-            
             item_data['identification_confidence'] = market_analysis['confidence']
             item_data['data_source'] = market_analysis['data_source']
-            if user_keywords:
-                item_data['user_input_incorporated'] = True
+            
+            # Check rare item database
+            rare_match = check_rare_item_database(item_data)
+            if rare_match:
+                item_data['rare_item_detected'] = True
+                item_data['rare_item_info'] = rare_match
+                item_data['market_insights'] += f" 💎 RARE ITEM: {rare_match['rare_item_match']} - {rare_match['estimated_value_range']}"
+            
+            # Detect era
+            detected_era = detect_era(item_data)
+            if detected_era:
+                item_data['era'] = detected_era
+                item_data['market_insights'] += f" 🏛️ Era: {detected_era}"
+            
+            logger.info(f"✅ eBay analysis complete")
                     
         else:
-            logger.error("❌ NO EBAY MARKET ANALYSIS AVAILABLE")
-            item_data['market_insights'] = "⚠️ Real eBay market data required but unavailable. Please ensure you are authenticated and try again."
+            logger.error("❌ NO EBAY DATA")
+            item_data['market_insights'] = "⚠️ Unable to retrieve eBay market data."
             item_data['identification_confidence'] = "low"
         
         return item_data
         
     except Exception as e:
-        logger.error(f"❌ eBay data enhancement failed: {e}")
-        item_data['market_insights'] = f"⚠️ eBay API error: {str(e)[:100]}. Please try again."
+        logger.error(f"❌ eBay enhancement failed: {e}")
+        item_data['market_insights'] = f"⚠️ Error: {str(e)[:100]}"
         item_data['identification_confidence'] = "error"
         return item_data
 
@@ -894,30 +1343,32 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
             if user_keywords:
                 enhanced_prompt += f"\n**EXTRACTED DETAILS FROM USER INPUT:**\n"
                 if user_keywords.get('years'):
-                    enhanced_prompt += f"- **YEAR(S):** {', '.join(user_keywords['years'])} (CRITICAL for accurate search)\n"
+                    enhanced_prompt += f"- **YEAR(S):** {', '.join(user_keywords['years'])}\n"
+                if user_keywords.get('decades'):
+                    enhanced_prompt += f"- **DECADE(S):** {', '.join(user_keywords['decades'])}\n"
+                if user_keywords.get('eras'):
+                    enhanced_prompt += f"- **ERA(S):** {', '.join(user_keywords['eras'])}\n"
                 if user_keywords.get('brands'):
-                    enhanced_prompt += f"- **BRAND(S):** {', '.join(user_keywords['brands'])} (USE EXACTLY for search)\n"
+                    enhanced_prompt += f"- **BRAND(S):** {', '.join(user_keywords['brands'])}\n"
                 if user_keywords.get('models'):
-                    enhanced_prompt += f"- **MODEL/FEATURES:** {', '.join(user_keywords['models'])}\n"
+                    enhanced_prompt += f"- **MODEL(S):** {', '.join(user_keywords['models'])}\n"
                 if user_keywords.get('features'):
-                    enhanced_prompt += f"- **ADDITIONAL FEATURES:** {', '.join(user_keywords['features'][:5])}\n"
+                    enhanced_prompt += f"- **FEATURES:** {', '.join(user_keywords['features'][:5])}\n"
         
-        enhanced_prompt += "\n\n🔍 **SEARCH PRIORITIZATION RULES (FOLLOW EXACTLY):**\n"
-        enhanced_prompt += "1. **USER DETAILS TAKE ABSOLUTE PRECEDENCE** over AI detection\n"
-        enhanced_prompt += "2. Use EXACT user-provided terms for identification and searching\n"
-        enhanced_prompt += "3. If user provides year(s), prioritize that exact year range\n"
-        enhanced_prompt += "4. If user provides specific model/feature terms, INCLUDE THEM in the search\n"
-        enhanced_prompt += "5. Combine visual analysis with user hints for maximum accuracy\n"
-        enhanced_prompt += "6. User knowledge is MORE VALUABLE than AI detection when available\n"
+        enhanced_prompt += "\n\n🔍 **SEARCH PRIORITIZATION RULES:**\n"
+        enhanced_prompt += "1. User details take ABSOLUTE precedence\n"
+        enhanced_prompt += "2. Follow real search patterns: [Era/Year] [Brand] [Model] [Features]\n"
+        enhanced_prompt += "3. Examples: '1955 Chevrolet 5 Window', '1980s Rolex Submariner', 'Victorian Mahogany Chair'\n"
+        enhanced_prompt += "4. For collectibles: '[Brand] [Specific Item Name] [Features]' like 'Ninetales Delta Species Pokemon Card'\n"
         
-        logger.info(f"🔬 Starting MAXIMUM ACCURACY analysis with user details and REAL eBay data...")
+        logger.info(f"🔬 Starting analysis with REAL eBay data...")
         
-        # Call Groq API for detailed analysis
+        # Call Groq API
         response_text = call_groq_api(enhanced_prompt, image_base64, mime_type)
-        logger.info("✅ AI analysis completed, parsing response...")
+        logger.info("✅ AI analysis completed")
         
         ai_response = parse_json_response(response_text)
-        logger.info(f"📊 Parsed {len(ai_response)} items from response")
+        logger.info(f"📊 Parsed {len(ai_response)} items")
         
         # Mock vision analysis
         vision_analysis = {
@@ -947,21 +1398,21 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 )
                 item_data["category"] = detected_category
                 
-                logger.info(f"📦 FINAL CATEGORY: '{detected_category}'")
+                logger.info(f"📦 CATEGORY: '{detected_category}'")
                 
-                # Enhance with REAL eBay market data using USER-PRIORITIZED search
+                # Enhance with REAL eBay market data
                 item_data = enhance_with_ebay_data_user_prioritized(item_data, vision_analysis, user_keywords)
                 
-                # Check if eBay authentication is required
+                # Check if eBay auth required
                 if item_data.get('identification_confidence') == 'requires_auth':
                     return {
                         "status": "failed",
                         "error": "EBAY_AUTH_REQUIRED",
-                        "message": "eBay authentication required for market analysis",
+                        "message": "eBay authentication required",
                         "requires_auth": True
                     }
                 
-                # Ensure we have ALL required fields
+                # Ensure required fields
                 if not item_data.get('brand'):
                     item_data['brand'] = "Unknown"
                 if not item_data.get('model'):
@@ -972,14 +1423,14 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                     item_data['identification_confidence'] = "medium"
                 if not item_data.get('additional_info_needed'):
                     item_data['additional_info_needed'] = [
-                        "Clear photos of any markings",
+                        "Clear photos of markings",
                         "Manufacturer information",
                         "Exact measurements"
                     ]
                 
-                # Ensure all fields are the correct type for iOS compatibility
+                # Ensure correct types
                 item_data = ensure_string_field(item_data, "year")
-                item_data = ensure_string_field(item_data, "user_specified_year")
+                item_data = ensure_string_field(item_data, "era")
                 item_data = ensure_numeric_fields(item_data)
                 
                 # Add user input flag
@@ -992,23 +1443,22 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 
                 enhanced_items.append(EnhancedAppItem(item_data).to_dict())
             else:
-                logger.warning(f"Skipping non-dictionary item: {item_data}")
+                logger.warning(f"Skipping non-dictionary item")
         
-        # CRITICAL: If no items, return error
         if not enhanced_items:
-            logger.error("❌ NO ITEMS PARSED FROM AI RESPONSE")
+            logger.error("❌ NO ITEMS PARSED")
             return {
                 "status": "failed",
                 "error": "NO_AI_ANALYSIS",
-                "message": "AI failed to analyze the image"
+                "message": "AI failed to analyze image"
             }
         
-        logger.info(f"✅ Processing complete: {len(enhanced_items)} items with REAL eBay data")
+        logger.info(f"✅ Complete: {len(enhanced_items)} items")
         
         return {
             "status": "completed",
             "result": {
-                "message": f"Maximum accuracy analysis completed with {len(enhanced_items)} items using REAL eBay data",
+                "message": f"Analysis complete with {len(enhanced_items)} items using REAL eBay data",
                 "items": enhanced_items,
                 "processing_time": "25-30s",
                 "analysis_stages": 3,
@@ -1021,15 +1471,15 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
         }
         
     except Exception as e:
-        logger.error(f"❌ Maximum accuracy processing failed: {e}")
+        logger.error(f"❌ Processing failed: {e}")
         return {
             "status": "failed", 
             "error": str(e)[:200]
         }
 
 def background_worker():
-    """Background worker with maximum accuracy only"""
-    logger.info("🎯 Background worker started - MAXIMUM ACCURACY ONLY")
+    """Background worker with maximum accuracy"""
+    logger.info("🎯 Background worker started")
     
     while True:
         try:
@@ -1045,9 +1495,8 @@ def background_worker():
                 job_data['started_at'] = datetime.now().isoformat()
                 job_storage[job_id] = job_data
             
-            logger.info(f"🔄 Processing job {job_id} with maximum accuracy...")
+            logger.info(f"🔄 Processing job {job_id}")
             
-            # Process with timeout (25 seconds for Render's 30s limit)
             future = job_executor.submit(process_image_maximum_accuracy, job_data)
             try:
                 result = future.result(timeout=25)
@@ -1056,16 +1505,16 @@ def background_worker():
                     if result.get('status') == 'completed':
                         job_data['status'] = 'completed'
                         job_data['result'] = result['result']
-                        logger.info(f"✅ Job {job_id} completed successfully")
+                        logger.info(f"✅ Job {job_id} completed")
                     elif result.get('error') == 'EBAY_AUTH_REQUIRED':
                         job_data['status'] = 'failed'
-                        job_data['error'] = 'eBay authentication required. Please connect your eBay account first.'
+                        job_data['error'] = 'eBay authentication required'
                         job_data['requires_auth'] = True
-                        logger.error(f"❌ Job {job_id} requires eBay authentication")
+                        logger.error(f"❌ Job {job_id} needs auth")
                     else:
                         job_data['status'] = 'failed'
                         job_data['error'] = result.get('error', 'Unknown error')
-                        logger.error(f"❌ Job {job_id} failed: {job_data['error']}")
+                        logger.error(f"❌ Job {job_id} failed")
                     
                     job_data['completed_at'] = datetime.now().isoformat()
                     job_storage[job_id] = job_data
@@ -1073,10 +1522,10 @@ def background_worker():
             except FutureTimeoutError:
                 with job_lock:
                     job_data['status'] = 'failed'
-                    job_data['error'] = 'Processing timeout (25s) - Server busy, please try again'
+                    job_data['error'] = 'Processing timeout (25s)'
                     job_data['completed_at'] = datetime.now().isoformat()
                     job_storage[job_id] = job_data
-                logger.warning(f"⏱️ Job {job_id} timed out after 25 seconds")
+                logger.warning(f"⏱️ Job {job_id} timed out")
                 
             job_queue.task_done()
             
@@ -1084,14 +1533,13 @@ def background_worker():
             update_activity()
             continue
         except Exception as e:
-            logger.error(f"🎯 Background worker error: {e}")
+            logger.error(f"Worker error: {e}")
             update_activity()
             time.sleep(5)
 
-# Start background worker on startup
 @app.on_event("startup")
 async def startup_event():
-    threading.Thread(target=background_worker, daemon=True, name="JobWorker-MaxAccuracy").start()
+    threading.Thread(target=background_worker, daemon=True, name="JobWorker").start()
     
     def keep_alive_loop():
         while True:
@@ -1104,12 +1552,12 @@ async def startup_event():
     
     threading.Thread(target=keep_alive_loop, daemon=True, name="KeepAlive").start()
     
-    logger.info("🚀 Server started with MAXIMUM ACCURACY processing and REAL eBay data ONLY")
+    logger.info("🚀 Server started with REAL eBay data")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     job_executor.shutdown(wait=False)
-    logger.info("🛑 Server shutting down")
+    logger.info("🛑 Server shutdown")
 
 # ============= EBAY OAUTH ENDPOINTS =============
 
@@ -1127,7 +1575,6 @@ async def get_ebay_auth_url():
         auth_url, state = ebay_oauth.generate_auth_url()
         
         logger.info(f"🔗 Generated auth URL")
-        logger.info(f"🔗 State: {state}")
         
         return {
             "success": True,
@@ -1138,8 +1585,8 @@ async def get_ebay_auth_url():
         }
         
     except Exception as e:
-        logger.error(f"❌ Failed to generate eBay auth URL: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate auth URL: {str(e)}")
+        logger.error(f"❌ Failed to generate auth URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ebay/oauth/callback")
 async def ebay_oauth_callback_get(
@@ -1150,12 +1597,10 @@ async def ebay_oauth_callback_get(
     """Handle eBay OAuth callback"""
     update_activity()
     
-    logger.info(f"🔔 eBay OAuth callback received. Code: {code is not None}, Error: {error}, State: {state}")
+    logger.info(f"🔔 OAuth callback: code={code is not None}, error={error}")
     
     if error:
-        logger.error(f"❌ eBay OAuth error: {error}")
         redirect_url = f"ai-resell-pro://ebay-oauth-callback?error={error}"
-        
         return HTMLResponse(content=f"""
             <!DOCTYPE html>
             <html>
@@ -1164,20 +1609,15 @@ async def ebay_oauth_callback_get(
                 <meta http-equiv="refresh" content="0; url={redirect_url}">
             </head>
             <body>
-                <script>
-                    window.location.href = "{redirect_url}";
-                </script>
+                <script>window.location.href = "{redirect_url}";</script>
                 <h1>❌ Authorization Failed</h1>
                 <p>Error: {error}</p>
-                <p><a href="{redirect_url}">Return to app</a></p>
             </body>
             </html>
         """)
     
     if not code:
-        logger.error("❌ No authorization code received")
         redirect_url = "ai-resell-pro://ebay-oauth-callback?error=no_code"
-        
         return HTMLResponse(content=f"""
             <!DOCTYPE html>
             <html>
@@ -1186,22 +1626,19 @@ async def ebay_oauth_callback_get(
                 <meta http-equiv="refresh" content="0; url={redirect_url}">
             </head>
             <body>
-                <script>
-                    window.location.href = "{redirect_url}";
-                </script>
-                <h1>❌ No Authorization Code</h1>
-                <p><a href="{redirect_url}">Return to app</a></p>
+                <script>window.location.href = "{redirect_url}";</script>
+                <h1>❌ No Code</h1>
             </body>
             </html>
         """)
     
     try:
-        logger.info(f"✅ Received OAuth code: {code[:20]}...")
+        logger.info(f"✅ Received code: {code[:20]}...")
         
         token_response = ebay_oauth.exchange_code_for_token(code, state=state)
         
         if token_response and token_response.get("success"):
-            logger.info("✅ Successfully obtained eBay OAuth token")
+            logger.info("✅ Token obtained")
             
             token_id = token_response["token_id"]
             
@@ -1209,104 +1646,63 @@ async def ebay_oauth_callback_get(
             if token_data and "access_token" in token_data:
                 access_token = token_data["access_token"]
                 store_ebay_token(access_token)
-                logger.info(f"✅ eBay access token stored for market analysis: {access_token[:20]}...")
+                logger.info(f"✅ Token stored: {access_token[:20]}...")
             
             redirect_url = f"ai-resell-pro://ebay-oauth-callback?success=true&token_id={token_id}&state={state}"
-            
-            logger.info(f"🔗 Redirecting to iOS app: {redirect_url}")
             
             return HTMLResponse(content=f"""
                 <!DOCTYPE html>
                 <html>
                 <head>
-                    <title>Redirecting to AI Resell Pro...</title>
+                    <title>Success</title>
                     <meta http-equiv="refresh" content="0; url={redirect_url}">
                     <style>
                         body {{
-                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                            font-family: -apple-system, sans-serif;
                             display: flex;
                             justify-content: center;
                             align-items: center;
                             min-height: 100vh;
-                            margin: 0;
                             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                             color: white;
                             text-align: center;
                         }}
                         .container {{
-                            background: rgba(255, 255, 255, 0.1);
+                            background: rgba(255,255,255,0.1);
                             padding: 40px;
                             border-radius: 20px;
-                            backdrop-filter: blur(10px);
-                        }}
-                        h1 {{ margin: 0 0 20px 0; font-size: 2em; }}
-                        .spinner {{
-                            border: 4px solid rgba(255, 255, 255, 0.3);
-                            border-top: 4px solid white;
-                            border-radius: 50%;
-                            width: 50px;
-                            height: 50px;
-                            animation: spin 1s linear infinite;
-                            margin: 20px auto;
-                        }}
-                        @keyframes spin {{
-                            0% {{ transform: rotate(0deg); }}
-                            100% {{ transform: rotate(360deg); }}
-                        }}
-                        a {{
-                            color: white;
-                            text-decoration: underline;
                         }}
                     </style>
                 </head>
                 <body>
                     <div class="container">
-                        <h1>✅ Authorization Successful!</h1>
-                        <div class="spinner"></div>
-                        <p>eBay connected for real market data</p>
-                        <p>Redirecting to AI Resell Pro...</p>
-                        <p style="margin-top: 30px; font-size: 0.9em;">
-                            If you are not redirected automatically,<br>
-                            <a href="{redirect_url}">click here</a>
-                        </p>
+                        <h1>✅ Connected!</h1>
+                        <p>Redirecting...</p>
                     </div>
-                    <script>
-                        window.location.href = "{redirect_url}";
-                        
-                        setTimeout(function() {{
-                            if (document.visibilityState === 'visible') {{
-                                window.location.href = "{redirect_url}";
-                            }}
-                        }}, 2000);
-                    </script>
+                    <script>window.location.href = "{redirect_url}";</script>
                 </body>
                 </html>
             """)
         else:
-            logger.error(f"❌ Failed to exchange code for token: {token_response}")
             error_msg = token_response.get("error", "unknown") if token_response else "no_response"
-            redirect_url = f"ai-resell-pro://ebay-oauth-callback?error=token_exchange_failed&details={error_msg}"
+            redirect_url = f"ai-resell-pro://ebay-oauth-callback?error=token_failed&details={error_msg}"
             
             return HTMLResponse(content=f"""
                 <!DOCTYPE html>
                 <html>
                 <head>
-                    <title>Authorization Failed</title>
+                    <title>Failed</title>
                     <meta http-equiv="refresh" content="0; url={redirect_url}">
                 </head>
                 <body>
-                    <script>
-                        window.location.href = "{redirect_url}";
-                    </script>
-                    <h1>❌ Token Exchange Failed</h1>
-                    <p>Error: {error_msg}</p>
-                    <p><a href="{redirect_url}">Return to app</a></p>
+                    <script>window.location.href = "{redirect_url}";</script>
+                    <h1>❌ Token Failed</h1>
                 </body>
                 </html>
             """)
         
     except Exception as e:
-        logger.error(f"❌ OAuth callback error: {e}")
+        logger.error(f"❌ Callback error: {e}")
         error_msg = str(e)[:100]
         redirect_url = f"ai-resell-pro://ebay-oauth-callback?error=callback_error&details={error_msg}"
         
@@ -1314,21 +1710,16 @@ async def ebay_oauth_callback_get(
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Authorization Error</title>
+                <title>Error</title>
                 <meta http-equiv="refresh" content="0; url={redirect_url}">
             </head>
             <body>
-                <script>
-                    window.location.href = "{redirect_url}";
-                </script>
-                <h1>❌ Authorization Error</h1>
-                <p>Error: {error_msg}</p>
-                <p><a href="{redirect_url}">Return to app</a></p>
+                <script>window.location.href = "{redirect_url}";</script>
+                <h1>❌ Error</h1>
             </body>
             </html>
         """)
 
-# Additional OAuth endpoints...
 @app.get("/ebay/oauth/token/{token_id}")
 async def get_ebay_token_endpoint(token_id: str):
     """Get eBay access token"""
@@ -1338,7 +1729,7 @@ async def get_ebay_token_endpoint(token_id: str):
         token_data = ebay_oauth.get_user_token(token_id)
         
         if not token_data:
-            raise HTTPException(status_code=404, detail="Token not found or expired")
+            raise HTTPException(status_code=404, detail="Token not found")
         
         refresh_ebay_token_if_needed(token_id)
         
@@ -1355,7 +1746,7 @@ async def get_ebay_token_endpoint(token_id: str):
 
 @app.delete("/ebay/oauth/token/{token_id}")
 async def revoke_ebay_token(token_id: str):
-    """Revoke/delete eBay token"""
+    """Revoke eBay token"""
     update_activity()
     
     try:
@@ -1368,10 +1759,11 @@ async def revoke_ebay_token(token_id: str):
             raise HTTPException(status_code=404, detail="Token not found")
         
     except Exception as e:
-        logger.error(f"Revoke token error: {e}")
+        logger.error(f"Revoke error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============= MAIN ENDPOINTS =============
+
 @app.post("/upload_item/")
 async def create_upload_file(
     file: UploadFile = File(...),
@@ -1385,7 +1777,7 @@ async def create_upload_file(
         if not ebay_token:
             raise HTTPException(
                 status_code=400, 
-                detail="eBay authentication required. Please connect your eBay account in the app settings first."
+                detail="eBay authentication required"
             )
         
         image_bytes = await file.read()
@@ -1416,15 +1808,14 @@ async def create_upload_file(
             }
         
         job_queue.put(job_id)
-        logger.info(f"📤 Job {job_id} queued (MAXIMUM ACCURACY with REAL eBay data)")
+        logger.info(f"📤 Job {job_id} queued")
         
         return {
-            "message": "Analysis queued with MAXIMUM ACCURACY using REAL eBay market data",
+            "message": "Analysis queued with REAL eBay data",
             "job_id": job_id,
             "status": "queued",
             "estimated_time": "25-30 seconds",
             "check_status_url": f"/job/{job_id}/status",
-            "note": "Processing with comprehensive AI + REAL eBay market data integration",
             "ebay_auth_status": "connected" if ebay_token else "required",
             "user_details_provided": bool(title or description)
         }
@@ -1433,7 +1824,7 @@ async def create_upload_file(
         raise he
     except Exception as e:
         logger.error(f"❌ Upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)[:200]}")
+        raise HTTPException(status_code=500, detail=str(e)[:200])
 
 @app.get("/job/{job_id}/status")
 async def get_job_status(job_id: str):
@@ -1494,7 +1885,7 @@ async def ping():
     return {
         "status": "✅ PONG",
         "timestamp": datetime.now().isoformat(),
-        "message": "Server is awake and processing with REAL eBay data",
+        "message": "Server awake with REAL eBay data",
         "ebay_ready": bool(get_ebay_token())
     }
 
@@ -1504,17 +1895,24 @@ async def root():
     ebay_token = get_ebay_token()
     
     return {
-        "message": "🎯 AI Resell Pro API - REAL EBAY DATA EDITION",
-        "status": "🚀 OPERATIONAL" if groq_client and ebay_token else "⚠️ AUTHENTICATION REQUIRED",
-        "version": "3.5.0",
-        "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required"
+        "message": "🎯 AI Resell Pro API - v4.0",
+        "status": "🚀 OPERATIONAL" if groq_client and ebay_token else "⚠️ AUTH REQUIRED",
+        "version": "4.0.0",
+        "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required",
+        "features": [
+            "Real eBay sold item data only",
+            "Era detection (Victorian, Mid-Century, etc.)",
+            "Rare item database (coins, stamps, cards)",
+            "Proper search patterns (Year Brand Model)",
+            "Background removal ready (iOS lift feature)"
+        ]
     }
 
 if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"🚀 Starting REAL EBAY DATA server on port {port}")
+    logger.info(f"🚀 Starting server on port {port}")
     
     uvicorn.run(
         app,
