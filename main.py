@@ -1,5 +1,6 @@
+# main.py (Updated Version)
 # JOB QUEUE + POLLING SYSTEM - MAXIMUM ACCURACY ONLY
-# Uses 25s processing window to stay within Render's 30s timeout
+# Enhanced search strategies for specific item types
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ import logging
 import base64
 import requests
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ebay_integration import ebay_api
 from dotenv import load_dotenv
 import uuid
@@ -23,9 +24,6 @@ import queue
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import asyncio
-import hmac
-import hashlib
-import urllib.parse
 
 # Load environment variables
 load_dotenv()
@@ -38,8 +36,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="AI Resell Pro API - Maximum Accuracy", 
-    version="4.0.0",
+    title="AI Resell Pro API - Enhanced Search Strategies", 
+    version="4.1.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -81,307 +79,328 @@ activity_lock = threading.Lock()
 EBAY_AUTH_TOKEN = None
 EBAY_TOKEN_LOCK = threading.Lock()
 
-# Rare item database (coins, stamps, collectibles)
-RARE_ITEM_DATABASE = {
-    'coins': {
-        '1909-S VDB': {'min_value': 500, 'max_value': 100000, 'rarity': 'extreme'},
-        '1955 Double Die': {'min_value': 1000, 'max_value': 125000, 'rarity': 'extreme'},
-        '1943 Copper Penny': {'min_value': 85000, 'max_value': 1000000, 'rarity': 'extreme'},
-        '1916-D Mercury Dime': {'min_value': 1000, 'max_value': 35000, 'rarity': 'high'},
-        '1893-S Morgan Dollar': {'min_value': 2000, 'max_value': 500000, 'rarity': 'extreme'},
-        '1804 Silver Dollar': {'min_value': 1000000, 'max_value': 10000000, 'rarity': 'legendary'},
-        '1913 Liberty Nickel': {'min_value': 3000000, 'max_value': 5000000, 'rarity': 'legendary'},
-    },
-    'stamps': {
-        'Inverted Jenny': {'min_value': 100000, 'max_value': 1500000, 'rarity': 'legendary'},
-        'British Guiana 1c': {'min_value': 8000000, 'max_value': 10000000, 'rarity': 'legendary'},
-        'Mauritius Post Office': {'min_value': 1000000, 'max_value': 2000000, 'rarity': 'legendary'},
-    },
-    'cards': {
-        'Charizard 1st Edition': {'min_value': 5000, 'max_value': 400000, 'rarity': 'extreme'},
-        'Black Lotus Alpha': {'min_value': 50000, 'max_value': 500000, 'rarity': 'extreme'},
-        'Honus Wagner T206': {'min_value': 1000000, 'max_value': 6000000, 'rarity': 'legendary'},
-        'Mickey Mantle 1952': {'min_value': 50000, 'max_value': 5000000, 'rarity': 'extreme'},
-    }
-}
+# ============= ENHANCED SEARCH STRATEGIES =============
 
-# Era classification patterns
-ERA_PATTERNS = {
-    'furniture': {
-        'Victorian': {'years': (1837, 1901), 'keywords': ['ornate', 'carved', 'mahogany', 'walnut', 'upholstered']},
-        'Art Deco': {'years': (1920, 1939), 'keywords': ['geometric', 'chrome', 'lacquer', 'streamlined']},
-        'Mid-Century Modern': {'years': (1945, 1969), 'keywords': ['teak', 'walnut', 'tapered legs', 'organic', 'eames']},
-        'Colonial': {'years': (1700, 1780), 'keywords': ['windsor', 'maple', 'pine', 'simple', 'handmade']},
-        'Art Nouveau': {'years': (1890, 1910), 'keywords': ['flowing', 'nature', 'curved', 'floral']},
-        'Chippendale': {'years': (1750, 1780), 'keywords': ['cabriole', 'ball and claw', 'mahogany']},
-        'Queen Anne': {'years': (1700, 1755), 'keywords': ['curved', 'cabriole legs', 'pad foot']},
-        'Federal': {'years': (1780, 1820), 'keywords': ['inlay', 'tapered', 'classical']},
-        'Empire': {'years': (1800, 1840), 'keywords': ['heavy', 'carved', 'gilt', 'claw feet']},
-        'Renaissance Revival': {'years': (1850, 1880), 'keywords': ['ornate', 'carved', 'walnut', 'pediment']},
-    },
-    'jewelry': {
-        'Victorian': {'years': (1837, 1901), 'keywords': ['mourning', 'cameo', 'filigree', 'sentiment']},
-        'Art Nouveau': {'years': (1890, 1910), 'keywords': ['nature', 'enamel', 'flowing', 'organic']},
-        'Edwardian': {'years': (1901, 1915), 'keywords': ['platinum', 'delicate', 'lace', 'filigree']},
-        'Art Deco': {'years': (1920, 1935), 'keywords': ['geometric', 'platinum', 'emerald cut', 'bold']},
-        'Retro': {'years': (1935, 1950), 'keywords': ['rose gold', 'large', 'cocktail', 'bold']},
-        'Mid-Century': {'years': (1950, 1970), 'keywords': ['modernist', 'abstract', 'textured']},
-    }
-}
-
-def update_activity():
-    """Update last activity timestamp"""
-    with activity_lock:
-        global last_activity
-        last_activity = time.time()
-
-def get_ebay_token() -> Optional[str]:
-    """Get eBay OAuth token from storage"""
-    global EBAY_AUTH_TOKEN
+def build_item_type_specific_queries(item_data: Dict, user_keywords: Dict, detected_category: str) -> List[str]:
+    """
+    Build category-specific search queries with optimal keyword ordering
+    """
+    search_strategies = []
     
-    with EBAY_TOKEN_LOCK:
-        if EBAY_AUTH_TOKEN:
-            logger.debug(f"🔑 Using stored eBay token: {EBAY_AUTH_TOKEN[:20]}...")
-            return EBAY_AUTH_TOKEN
-        
-        token = os.getenv('EBAY_AUTH_TOKEN')
-        if token:
-            logger.info(f"🔑 Loaded eBay token from env: {token[:20]}...")
-            EBAY_AUTH_TOKEN = token
-            return token
-        
-        logger.warning("⚠️ No eBay OAuth token available")
-        return None
-
-def store_ebay_token(token: str):
-    """Store eBay OAuth token"""
-    global EBAY_AUTH_TOKEN
-    
-    with EBAY_TOKEN_LOCK:
-        EBAY_AUTH_TOKEN = token
-        logger.info(f"🔑 Stored new eBay token: {token[:20]}...")
-
-def refresh_ebay_token_if_needed(token_id: str) -> bool:
-    """Refresh eBay token if it's expired"""
-    try:
-        token_data = ebay_oauth.get_user_token(token_id)
-        if not token_data:
-            logger.warning("⚠️ No token data found for refresh")
-            return False
-        
-        expires_at = datetime.fromisoformat(token_data["expires_at"])
-        time_remaining = expires_at - datetime.now()
-        
-        if time_remaining.total_seconds() < 300:
-            logger.info("🔄 Token expiring soon, attempting refresh...")
-            if "refresh_token" in token_data:
-                refreshed = ebay_oauth.refresh_token(token_data["refresh_token"])
-                if refreshed and refreshed.get("success"):
-                    logger.info("✅ Token refreshed successfully")
-                    if refreshed.get("access_token"):
-                        store_ebay_token(refreshed["access_token"])
-                    return True
-                else:
-                    logger.error("❌ Token refresh failed")
-                    return False
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Token refresh check error: {e}")
-        return False
-
-def check_rare_item_database(item_data: Dict) -> Optional[Dict]:
-    """Check if item matches rare item database"""
+    # Get AI-identified specifics
     title = item_data.get('title', '').lower()
     description = item_data.get('description', '').lower()
-    category = item_data.get('category', '').lower()
+    brand = item_data.get('brand', '').lower()
+    model = item_data.get('model', '').lower()
+    year = item_data.get('year', '').strip()
+    era = item_data.get('era', '').lower()
     
-    combined_text = f"{title} {description}"
-    
-    # Check category-specific rare items
-    if category in ['coins', 'collectibles']:
-        for item_name, data in RARE_ITEM_DATABASE.get('coins', {}).items():
-            if item_name.lower() in combined_text:
-                logger.info(f"💎 RARE COIN DETECTED: {item_name}")
-                return {
-                    'rare_item_match': item_name,
-                    'rarity_level': data['rarity'],
-                    'estimated_value_range': f"${data['min_value']:,} - ${data['max_value']:,}",
-                    'database_source': 'rare_coins'
-                }
-    
-    if category == 'stamps':
-        for item_name, data in RARE_ITEM_DATABASE.get('stamps', {}).items():
-            if item_name.lower() in combined_text:
-                logger.info(f"💎 RARE STAMP DETECTED: {item_name}")
-                return {
-                    'rare_item_match': item_name,
-                    'rarity_level': data['rarity'],
-                    'estimated_value_range': f"${data['min_value']:,} - ${data['max_value']:,}",
-                    'database_source': 'rare_stamps'
-                }
-    
-    if category == 'collectibles':
-        for item_name, data in RARE_ITEM_DATABASE.get('cards', {}).items():
-            if item_name.lower() in combined_text:
-                logger.info(f"💎 RARE CARD DETECTED: {item_name}")
-                return {
-                    'rare_item_match': item_name,
-                    'rarity_level': data['rarity'],
-                    'estimated_value_range': f"${data['min_value']:,} - ${data['max_value']:,}",
-                    'database_source': 'rare_cards'
-                }
-    
-    return None
-
-def detect_era(item_data: Dict) -> Optional[str]:
-    """Detect historical era of item (furniture, jewelry, etc.)"""
-    category = item_data.get('category', '').lower()
-    title = item_data.get('title', '').lower()
-    description = item_data.get('description', '').lower()
-    year_str = item_data.get('year', '').strip()
-    
-    combined_text = f"{title} {description}"
-    
-    # Check if category has era patterns
-    if category not in ERA_PATTERNS:
-        return None
-    
-    era_matches = []
-    
-    for era_name, era_data in ERA_PATTERNS[category].items():
-        score = 0
+    # 🎯 CATEGORY-SPECIFIC SEARCH PATTERNS
+    if detected_category == 'collectibles':
+        # For trading cards: "[Year] [Brand] [Card Name] [Set] [Card Number] [Features]"
+        # Example: "2006 Pokemon Ninetales Delta Species 8/101 Holo"
         
-        # Check keywords
-        for keyword in era_data['keywords']:
-            if keyword in combined_text:
-                score += 2
+        # Extract specific card details
+        card_name = extract_card_name(title, description)
+        card_number = extract_card_number(description)
+        set_name = extract_set_name(description)
+        features = extract_card_features(description)
         
-        # Check year range
-        if year_str and year_str.isdigit():
-            year = int(year_str)
-            year_start, year_end = era_data['years']
-            if year_start <= year <= year_end:
-                score += 5
+        queries = []
         
-        # Check if era name is mentioned
-        if era_name.lower() in combined_text:
-            score += 10
+        # STRATEGY 1: Complete card identification
+        if card_name and card_number:
+            # Format: "Pokemon Ninetales Delta Species 8/101"
+            query = f"pokemon {card_name} {card_number}"
+            if set_name:
+                query += f" {set_name}"
+            if features:
+                query += f" {features}"
+            queries.append(query)
+            logger.info(f"🃏 CARD EXACT: '{query}'")
         
-        if score > 0:
-            era_matches.append((era_name, score))
+        # STRATEGY 2: Brand + Card Name + Features
+        if card_name:
+            query = f"pokemon {card_name}"
+            if 'delta' in description.lower() or 'delta' in title.lower():
+                query += " delta species"
+            if 'holo' in description.lower() or 'holographic' in description.lower():
+                query += " holo"
+            queries.append(query)
+            logger.info(f"🃏 CARD FEATURED: '{query}'")
+        
+        # STRATEGY 3: Card Number + Set
+        if card_number and set_name:
+            query = f"pokemon {card_number} {set_name}"
+            queries.append(query)
+            logger.info(f"🃏 CARD NUMBER+SET: '{query}'")
+        
+        # STRATEGY 4: Clean generic fallback
+        if card_name:
+            # Remove generic words and focus on unique identifiers
+            generic_words = ['pokemon', 'card', 'cards', 'trading', 'collectible', 'rare']
+            name_parts = [word for word in card_name.split() if word not in generic_words]
+            if name_parts:
+                query = f"pokemon {' '.join(name_parts[:3])}"  # Max 3 specific name parts
+                queries.append(query)
+                logger.info(f"🃏 CARD CLEAN: '{query}'")
+        
+        search_strategies = queries
+        
+    elif detected_category == 'vehicles':
+        # For vehicles: "[Year] [Make] [Model] [Trim]" 
+        # Example: "1955 Chevrolet 3100", "1969 Ford Mustang"
+        
+        # Clean brand name
+        vehicle_brand = clean_vehicle_brand(brand)
+        
+        # Clean model name (remove window/trim descriptors for search)
+        vehicle_model = clean_vehicle_model(model)
+        
+        queries = []
+        
+        # STRATEGY 1: Year + Make + Model (primary)
+        if year and vehicle_brand and vehicle_model:
+            query = f"{year} {vehicle_brand} {vehicle_model}"
+            queries.append(query)
+            logger.info(f"🚗 VEHICLE PRIMARY: '{query}'")
+        
+        # STRATEGY 2: Make + Model + Year (alternative)
+        if vehicle_brand and vehicle_model:
+            query = f"{vehicle_brand} {vehicle_model}"
+            if year:
+                query += f" {year}"
+            queries.append(query)
+            logger.info(f"🚗 VEHICLE ALTERNATE: '{query}'")
+        
+        # STRATEGY 3: Just Make + Model
+        if vehicle_brand and vehicle_model:
+            query = f"{vehicle_brand} {vehicle_model}"
+            queries.append(query)
+            logger.info(f"🚗 VEHICLE BASIC: '{query}'")
+        
+        search_strategies = queries
+        
+    elif detected_category in ['furniture', 'jewelry', 'art']:
+        # For antiques/collectibles: "[Era] [Style] [Material] [Item Type]"
+        # Example: "Victorian Mahogany Chair", "Art Deco Platinum Ring"
+        
+        queries = []
+        
+        # STRATEGY 1: Era + Style + Item Type
+        if era and detected_category:
+            query = f"{era} {detected_category}"
+            queries.append(query)
+            logger.info(f"🏛️ ERA+CATEGORY: '{query}'")
+        
+        # STRATEGY 2: Material + Style
+        material = extract_material(description)
+        if material:
+            query = f"{material} {detected_category}"
+            if era:
+                query += f" {era}"
+            queries.append(query)
+            logger.info(f"🏛️ MATERIAL+ERA: '{query}'")
+        
+        # STRATEGY 3: Brand + Era (for jewelry)
+        if brand and 'unknown' not in brand and detected_category == 'jewelry':
+            query = f"{brand} {detected_category}"
+            if era:
+                query += f" {era}"
+            queries.append(query)
+            logger.info(f"💎 BRAND+ERA: '{query}'")
+        
+        search_strategies = queries
+        
+    else:
+        # Generic fallback for other categories
+        queries = []
+        
+        # Use brand + model + year pattern
+        if brand and 'unknown' not in brand:
+            query_parts = []
+            if year:
+                query_parts.append(year)
+            query_parts.append(brand)
+            if model and 'unknown' not in model:
+                query_parts.append(model)
+            
+            if query_parts:
+                query = " ".join(query_parts)
+                queries.append(query)
+                logger.info(f"🏷️ GENERIC BRAND: '{query}'")
+        
+        # Clean title as fallback
+        if title:
+            # Remove common generic words
+            stop_words = ['the', 'a', 'an', 'and', 'or', 'for', 'with', 'in', 'on', 'at', 'to', 
+                         'item', 'product', 'good', 'excellent', 'condition', 'vintage', 'used']
+            title_words = [word for word in title.split()[:6] 
+                          if word.lower() not in stop_words and len(word) > 2]
+            if title_words:
+                query = " ".join(title_words)
+                queries.append(query)
+                logger.info(f"📝 CLEANED TITLE: '{query}'")
+        
+        search_strategies = queries
     
-    if era_matches:
-        # Sort by score and return highest
-        era_matches.sort(key=lambda x: x[1], reverse=True)
-        best_match = era_matches[0]
-        
-        if best_match[1] >= 5:  # Minimum confidence threshold
-            logger.info(f"🏛️ ERA DETECTED: {best_match[0]} (score: {best_match[1]})")
-            return best_match[0]
+    # Add user keywords if available (HIGH PRIORITY)
+    if user_keywords:
+        user_queries = build_user_keyword_queries(user_keywords, detected_category)
+        search_strategies = user_queries + search_strategies  # User queries first
     
-    return None
-
-# MAXIMUM ACCURACY MARKET ANALYSIS PROMPT - ENHANCED FOR MULTI-ITEM
-market_analysis_prompt = """
-EXPERT RESELL ANALYST - MAXIMUM ACCURACY ANALYSIS:
-
-**CRITICAL: If multiple distinct items are visible in the image, analyze EACH separately.**
-**Do NOT combine unrelated items into a single analysis. Return a JSON ARRAY of items.**
-
-🔍 **MULTI-ITEM ANALYSIS RULES:**
-1. Count ALL distinct items visible
-2. Analyze EACH item separately with its own value
-3. If items form a SET (like trading cards), analyze as a SET with combined value
-4. For unrelated items, create separate analyses
-5. If single item, return single-item array
-
-🔍 **COMPREHENSIVE IDENTIFICATION PHASE (PER ITEM):**
-- Extract EVERY visible text, number, logo, brand mark, model number, serial number
-- Identify ALL materials, construction quality, age indicators, manufacturing details
-- Note ALL condition issues, wear patterns, damage, repairs, modifications
-- Capture EXACT size, dimensions, weight indicators, manufacturing codes
-- Identify style period/era (Victorian, Art Deco, Mid-Century, Colonial, etc.)
-
-📊 **ENHANCED MARKET ANALYSIS PHASE:**
-- Use EXACT brand/model/year data when available
-- If specific identification is unclear, analyze by material, construction, and visual characteristics
-- Consider brand popularity, rarity, demand trends, collector interest
-- Factor in ALL condition deductions and market saturation
-- Account for seasonal pricing variations and current market trends
-- Identify historical era or period if applicable (furniture, jewelry, collectibles)
-
-💰 **PRECISE PROFITABILITY ANALYSIS:**
-- Calculate REALISTIC resale price range based on ALL factors
-- Suggest MAXIMUM purchase price for profit with ALL fees accounted
-- Estimate EXACT profit margins after ALL fees (eBay: 13%, shipping: $8-15, packaging: $3)
-- Rate resellability 1-10 based on demand/competition/condition
-
-📝 **INTELLIGENT FALLBACK STRATEGY (ONLY if specific ID impossible):**
-- Analyze by material composition (wood, metal, plastic, fabric, etc.)
-- Identify manufacturing style and era indicators
-- Assess quality level (consumer, professional, luxury, handmade)
-- Provide guidance on what additional info would enable precise identification
-
-Return analysis in JSON array format:
-
-[
-  {
-    "title": "eBay-optimized title with ALL available details",
-    "description": "COMPREHENSIVE description with ALL visible details, condition notes, and identification guidance",
-    "price_range": "Current market range: $X - $Y (based on available data)",
-    "resellability_rating": 8,
-    "suggested_cost": "Maximum to pay: $X (for profitable resale)",
-    "market_insights": "Detailed market demand, competition level, selling strategies",
-    "authenticity_checks": "SPECIFIC red flags and verification steps",
-    "profit_potential": "Expected profit: $X-Y after ALL fees",
-    "category": "Primary eBay category (based on analysis)",
-    "ebay_specific_tips": ["Photography tips", "Listing optimization", "Timing advice", "Keyword strategies"],
+    # Clean and deduplicate
+    cleaned = []
+    seen = set()
+    for strategy in search_strategies:
+        strategy = clean_search_query(strategy)
+        if (strategy and 
+            strategy not in seen and 
+            len(strategy) > 3 and
+            len(strategy.split()) <= 6):  # Max 6 terms
+            seen.add(strategy)
+            cleaned.append(strategy[:80])  # eBay search limit
     
-    "brand": "Exact brand if visible, otherwise 'Unknown - appears to be [quality/style]'",
-    "model": "Model number/name if visible, otherwise descriptive characteristics", 
-    "year": "Production year if determinable, otherwise era/style indicators",
-    "era": "Historical period if applicable (Victorian, Mid-Century, Art Deco, etc.)",
-    "condition": "DETAILED condition assessment with specific notes",
-    "confidence": 0.85,
-    "analysis_depth": "comprehensive",
-    "key_features": ["ALL notable features that add value"],
-    "comparable_items": "Similar items selling for $X-Y",
-    "identification_confidence": "high/medium/low with reasoning",
-    "additional_info_needed": ["What specific info would enable better identification"]
-  }
-]
+    logger.info(f"🔍 FINAL ENHANCED SEARCH STRATEGIES: {cleaned}")
+    return cleaned[:4]  # Max 4 strategies
 
-CRITICAL: Base pricing on ACTUAL market conditions, NEVER guess.
-If specific identification is unclear, analyze by observable characteristics and provide guidance.
+def extract_card_name(title: str, description: str) -> str:
+    """Extract specific card name from title/description"""
+    # Remove generic words
+    generic_words = ['pokemon', 'card', 'cards', 'trading', 'collectible', 'rare', 'vintage', 'holographic']
+    
+    # Look for patterns like "Ninetales Delta Species"
+    words = title.lower().split()
+    card_words = []
+    
+    for word in words:
+        if word not in generic_words and not word.isdigit():
+            card_words.append(word)
+    
+    return " ".join(card_words[:3]) if card_words else ""
 
-IMPORTANT: Return ONLY valid JSON array, no additional text or explanations.
-ALWAYS provide actionable insights, NEVER empty or generic responses.
-"""
+def extract_card_number(description: str) -> str:
+    """Extract card number like 8/101"""
+    pattern = r'(\d+\s*/\s*\d+)'
+    match = re.search(pattern, description)
+    return match.group(1) if match else ""
 
-def map_to_ebay_category(category: str) -> str:
-    """Map internal category to eBay search-friendly category"""
-    category_mapping = {
-        'electronics': 'electronics',
-        'clothing': 'clothing shoes accessories',
-        'furniture': 'antiques furniture',
-        'collectibles': 'collectibles',
-        'books': 'books magazines',
-        'toys': 'toys hobbies',
-        'jewelry': 'jewelry watches',
-        'sports': 'sporting goods',
-        'tools': 'tools',
-        'kitchen': 'home garden',
-        'vehicles': 'cars trucks',
-        'automotive': 'cars trucks',
-        'music': 'musical instruments gear',
-        'art': 'art',
-        'coins': 'coins paper money',
-        'stamps': 'stamps',
-        'unknown': ''
+def extract_set_name(description: str) -> str:
+    """Extract set name like 'Dragon Frontiers'"""
+    set_keywords = ['dragon frontiers', 'holon phantoms', 'crystal guardians', 'ex set']
+    for keyword in set_keywords:
+        if keyword in description.lower():
+            return keyword.title()
+    return ""
+
+def extract_card_features(description: str) -> str:
+    """Extract card features like 'holo', '1st edition'"""
+    features = []
+    feature_keywords = ['holo', 'holographic', 'first edition', '1st edition', 'reverse holo', 'delta species']
+    
+    desc_lower = description.lower()
+    for keyword in feature_keywords:
+        if keyword in desc_lower:
+            features.append(keyword)
+    
+    return " ".join(features)
+
+def clean_vehicle_brand(brand: str) -> str:
+    """Clean vehicle brand for search"""
+    if not brand:
+        return ""
+    
+    brand = brand.lower()
+    # Clean common variations
+    brand_mapping = {
+        'chevy': 'chevrolet',
+        'vw': 'volkswagen',
+        'benz': 'mercedes',
+        'mb': 'mercedes',
+        'bmw': 'bmw',
+        'ford': 'ford',
+        'toyota': 'toyota',
+        'honda': 'honda'
     }
     
-    return category_mapping.get(category.lower(), '')
+    for key, value in brand_mapping.items():
+        if key in brand:
+            return value
+    
+    return brand.title()
+
+def clean_vehicle_model(model: str) -> str:
+    """Clean vehicle model for search"""
+    if not model or 'unknown' in model.lower():
+        return ""
+    
+    # Remove window/trim descriptors
+    model = re.sub(r'\d+\s*window', '', model.lower())
+    model = re.sub(r'window', '', model)
+    model = re.sub(r'deluxe|custom|standard|edition|trim', '', model)
+    
+    return model.strip().title()
+
+def extract_material(description: str) -> str:
+    """Extract material from description"""
+    materials = ['mahogany', 'walnut', 'oak', 'teak', 'cherry', 'maple',
+                'gold', 'silver', 'platinum', 'brass', 'bronze',
+                'marble', 'granite', 'crystal', 'glass']
+    
+    desc_lower = description.lower()
+    for material in materials:
+        if material in desc_lower:
+            return material.title()
+    
+    return ""
+
+def build_user_keyword_queries(user_keywords: Dict, category: str) -> List[str]:
+    """Build search queries from user-provided keywords"""
+    queries = []
+    
+    if not user_keywords:
+        return []
+    
+    # Start with specific combinations
+    query_parts = []
+    
+    # Year first (for vehicles, antiques)
+    if user_keywords.get('years'):
+        query_parts.append(user_keywords['years'][0])
+    
+    # Brand second
+    if user_keywords.get('brands'):
+        query_parts.append(user_keywords['brands'][0])
+    
+    # Model third
+    if user_keywords.get('models'):
+        query_parts.append(user_keywords['models'][0])
+    
+    # Features fourth
+    if user_keywords.get('features'):
+        # Filter out non-search-friendly features
+        search_features = []
+        for feature in user_keywords['features'][:2]:  # Max 2 features
+            if len(feature) > 3 and feature.lower() not in ['window', 'windows', 'deluxe']:
+                search_features.append(feature)
+        query_parts.extend(search_features)
+    
+    if query_parts:
+        query = " ".join(query_parts)
+        queries.append(query)
+        logger.info(f"🎯 USER KEYWORD QUERY: '{query}'")
+    
+    # Category-specific user queries
+    if category == 'collectibles' and user_keywords.get('features'):
+        # For cards, include specific features like "1st edition"
+        for feature in user_keywords['features']:
+            if any(keyword in feature.lower() for keyword in ['edition', 'holo', 'delta']):
+                if user_keywords.get('brands'):
+                    query = f"{user_keywords['brands'][0]} {feature}"
+                    queries.append(query)
+                    logger.info(f"🃏 USER CARD FEATURE: '{query}'")
+    
+    return queries
 
 def clean_search_query(query: str) -> str:
     """Clean and optimize search query for eBay"""
@@ -397,452 +416,10 @@ def clean_search_query(query: str) -> str:
     
     return query
 
-def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
-    """
-    IMPROVED CONTEXT-AWARE category detection
-    """
-    title_lower = title.lower()
-    description_lower = description.lower()
-    
-    detected_text = " ".join(vision_analysis.get('detected_text', []))
-    detected_objects = " ".join(vision_analysis.get('detected_objects', []))
-    brands = " ".join(vision_analysis.get('potential_brands', []))
-    
-    all_text = f"{title_lower} {description_lower} {detected_text.lower()} {detected_objects.lower()} {brands.lower()}"
-    
-    # 🚨 CRITICAL FIX: Use CONTEXT-AWARE detection, not just keyword matching
-    # First, check for OBVIOUS MISCLASSIFICATIONS
-    
-    # Is this a COLLECTIBLE CARD (not a vehicle)?
-    # Look for strong card-related terms
-    card_indicators = [
-        ("pokemon card", 10), ("trading card", 10), ("baseball card", 10),
-        ("football card", 10), ("basketball card", 10), ("hockey card", 10),
-        ("magic card", 10), ("yu-gi-oh", 10), ("tcg", 8),
-        ("first edition", 8), ("graded", 8), ("psa", 8), ("bgs", 8),
-        ("holo", 6), ("holographic", 6), ("collectible card", 8)
-    ]
-    
-    for keyword, score in card_indicators:
-        if keyword in all_text:
-            logger.info(f"🃏 STRONG CARD INDICATOR: '{keyword}' (score: {score})")
-            return "collectibles"
-    
-    # Is this a TOY/PLUSH (not a vehicle)?
-    toy_indicators = [
-        ("care bear", 10), ("teddy bear", 10), ("stuffed animal", 10),
-        ("plush", 8), ("toy", 6), ("action figure", 8), ("doll", 8),
-        ("lego", 10), ("playset", 6), ("model kit", 6)
-    ]
-    
-    for keyword, score in toy_indicators:
-        if keyword in all_text:
-            logger.info(f"🧸 STRONG TOY INDICATOR: '{keyword}' (score: {score})")
-            return "toys"
-    
-    # 🚨 SMART VEHICLE DETECTION: Only detect vehicles with STRONG evidence
-    vehicle_indicators = [
-        ("truck", 8), ("pickup", 8), ("sedan", 8), ("suv", 8), ("van", 8),
-        ("motorcycle", 8), ("boat", 8), ("trailer", 8), ("rv", 8),
-        ("automobile", 8), ("vehicle", 6), ("car", 5)  # "car" has lower score
-    ]
-    
-    vehicle_score = 0
-    for keyword, score in vehicle_indicators:
-        if keyword in all_text:
-            # Check context - is "car" in a product name or actual vehicle?
-            if keyword == "car":
-                # "car" in product names like "Care Bear" or "Pokemon Scarlet Violet" should NOT count
-                if "care bear" in all_text or "pokemon" in all_text or "trading card" in all_text:
-                    logger.info(f"🚫 Ignoring 'car' in product name: {all_text[:50]}...")
-                    continue
-            
-            vehicle_score += score
-            logger.info(f"🚗 Vehicle indicator: '{keyword}' (+{score})")
-    
-    # Also check for year + automotive brand combination (strong vehicle signal)
-    year_pattern = r'\b(19[0-9]\d|20[0-2]\d)\b'
-    years = re.findall(year_pattern, all_text)
-    
-    automotive_brands = ["chevrolet", "chevy", "ford", "toyota", "honda", "bmw", "mercedes", "dodge"]
-    has_auto_brand = any(brand in all_text for brand in automotive_brands)
-    
-    if years and has_auto_brand:
-        vehicle_score += 15
-        logger.info(f"🚗 STRONG VEHICLE SIGNAL: Year {years[0]} + automotive brand")
-    
-    # Only classify as vehicle if we have strong evidence
-    if vehicle_score >= 10:
-        logger.info(f"📦 VEHICLE DETECTED (score: {vehicle_score})")
-        return "vehicles"
-    
-    # Score each category based on comprehensive keyword matching
-    category_keywords = {
-        # Musical Instruments
-        "music": [
-            "piano", "guitar", "violin", "trumpet", "saxophone", "drums", 
-            "keyboard", "synthesizer", "amplifier", "microphone"
-        ],
-        
-        # Collectible Cards & Games
-        "collectibles": [
-            "pokemon", "pokémon", "magic", "yugioh", "baseball card", "sports card",
-            "trading card", "tcg", "ccg", "collectible", "rare card", "vintage card"
-        ],
-        
-        # Electronics
-        "electronics": [
-            "iphone", "samsung", "laptop", "computer", "camera", "headphones",
-            "speaker", "smartphone", "tablet", "gaming console", "playstation"
-        ],
-        
-        # Clothing & Shoes
-        "clothing": [
-            "shirt", "pants", "jeans", "dress", "jacket", "coat", "shoe",
-            "sneaker", "boot", "hoodie", "sweater", "t-shirt"
-        ],
-        
-        # Furniture
-        "furniture": [
-            "chair", "table", "sofa", "couch", "desk", "bed", "dresser",
-            "cabinet", "bookshelf", "wardrobe", "armoire"
-        ],
-        
-        # Jewelry & Watches
-        "jewelry": [
-            "ring", "necklace", "bracelet", "earring", "watch", "rolex",
-            "diamond", "gold", "silver", "platinum", "gemstone"
-        ],
-        
-        # Books
-        "books": [
-            "book", "novel", "hardcover", "paperback", "textbook", "comic book",
-            "manga", "graphic novel", "first edition", "signed book"
-        ],
-        
-        # Toys & Action Figures
-        "toys": [
-            "toy", "action figure", "doll", "lego", "stuffed animal", "plush",
-            "model car", "hot wheels", "board game", "puzzle"
-        ],
-        
-        # Sports Equipment
-        "sports": [
-            "baseball", "football", "basketball", "golf", "tennis", "hockey",
-            "fishing", "bicycle", "skateboard", "exercise equipment"
-        ],
-        
-        # Tools & Hardware
-        "tools": [
-            "tool", "wrench", "hammer", "screwdriver", "drill", "saw",
-            "pliers", "toolbox", "power tool", "hand tool"
-        ],
-        
-        # Art & Decor
-        "art": [
-            "painting", "print", "sculpture", "drawing", "photograph",
-            "canvas", "art", "original art", "signed art"
-        ],
-        
-        # Kitchen & Appliances
-        "kitchen": [
-            "kitchen", "pan", "pot", "knife", "cutlery", "blender",
-            "mixer", "toaster", "coffee maker", "microwave"
-        ]
-    }
-    
-    scores = {category: 0 for category in category_keywords}
-    scores["unknown"] = 0
-    
-    for category, keywords in category_keywords.items():
-        for keyword in keywords:
-            if keyword in all_text:
-                # Weight by how definitive the keyword is
-                weight = 3 if len(keyword) > 5 else 1  # Longer words are more specific
-                scores[category] += weight
-    
-    # Get highest scoring category
-    detected_category = max(scores.items(), key=lambda x: x[1])[0]
-    highest_score = scores[detected_category]
-    
-    # Only accept if score is above reasonable threshold
-    if highest_score >= 3:
-        logger.info(f"📦 CATEGORY: '{detected_category}' (score: {highest_score})")
-        return detected_category
-    else:
-        logger.info(f"📦 CATEGORY: 'unknown' (highest score: {highest_score})")
-        return "unknown"
+# ============= ENHANCED EBAY SEARCH =============
 
-def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
-    """Extract structured keywords from user input"""
-    if not user_text:
-        return {}
-    
-    user_text = user_text.lower()
-    
-    # Extract year patterns (1900-2025)
-    year_pattern = r'\b(19[0-9]\d|20[0-2]\d)\b'
-    years = re.findall(year_pattern, user_text)
-    
-    # Extract decade patterns (1980s, 1990s, etc.)
-    decade_pattern = r'\b(19[0-9]0s|20[0-2]0s)\b'
-    decades = re.findall(decade_pattern, user_text)
-    
-    # Extract era keywords
-    era_keywords = [
-        'victorian', 'edwardian', 'art deco', 'art nouveau', 'mid century', 'mid-century',
-        'colonial', 'federal', 'empire', 'renaissance', 'baroque', 'rococo',
-        'chippendale', 'queen anne', 'regency', 'georgian', 'retro', 'vintage', 'antique'
-    ]
-    
-    eras = []
-    for era in era_keywords:
-        if era in user_text:
-            eras.append(era.title())
-    
-    # Extract potential brand names
-    brands = []
-    common_brands = [
-        # Automotive
-        'chevy', 'chevrolet', 'ford', 'toyota', 'honda', 'bmw', 'mercedes', 'benz',
-        'dodge', 'jeep', 'gmc', 'cadillac', 'buick', 'pontiac', 'ram', 'chrysler',
-        'nissan', 'subaru', 'mazda', 'volkswagen', 'vw', 'audi', 'volvo', 'tesla',
-        'porsche', 'ferrari', 'lamborghini', 'jaguar', 'land rover', 'mini',
-        
-        # Musical Instruments
-        'steinway', 'yamaha', 'petrof', 'baldwin', 'kawai', 'bosendorfer',
-        'fender', 'gibson', 'martin', 'taylor', 'prs', 'ibanez',
-        
-        # Electronics
-        'apple', 'samsung', 'sony', 'microsoft', 'google', 'dell', 'hp', 'lenovo',
-        'canon', 'nikon', 'panasonic', 'lg', 'bose',
-        
-        # Fashion
-        'nike', 'adidas', 'jordan', 'gucci', 'prada', 'louis vuitton', 'lv',
-        'supreme', 'bape', 'off-white', 'balenciaga', 'versace',
-        
-        # Watches
-        'rolex', 'omega', 'cartier', 'patek philippe', 'tag heuer', 'breitling',
-        
-        # General
-        'pokemon', 'pokémon', 'magic', 'yugioh', 'topps'
-    ]
-    
-    for brand in common_brands:
-        if brand in user_text:
-            if brand == 'chevy':
-                brands.append('Chevrolet')
-            elif brand == 'vw':
-                brands.append('Volkswagen')
-            elif brand == 'benz':
-                brands.append('Mercedes-Benz')
-            elif brand == 'lv':
-                brands.append('Louis Vuitton')
-            else:
-                brands.append(brand.title())
-    
-    # Extract model indicators and specific features
-    models = []
-    features = []
-    
-    model_keywords = [
-        'truck', 'pickup', 'sedan', 'coupe', 'convertible', 'suv', 'van',
-        'deluxe', 'custom', 'standard', 'limited',
-        'premium', 'luxury', 'sport', 'performance', 'edition', 'series',
-        'grand', 'upright', 'baby grand', 'console',
-        'first edition', '1st edition', 'shadowless', 'holographic', 'holo',
-        'graded', 'psa', 'bgs', 'cgc', 'mint', 'near mint'
-    ]
-    
-    for keyword in model_keywords:
-        if keyword in user_text:
-            if keyword in ['window', '5-window', 'deluxe', 'custom', 'standard', 'holographic', 'holo', 'graded']:
-                features.append(keyword)
-            else:
-                models.append(keyword)
-    
-    # Remove duplicates
-    def deduplicate(lst):
-        seen = set()
-        result = []
-        for item in lst:
-            item_lower = item.lower()
-            if item_lower not in seen:
-                seen.add(item_lower)
-                result.append(item)
-        return result
-    
-    years = deduplicate(years)
-    decades = deduplicate(decades)
-    eras = deduplicate(eras)
-    brands = deduplicate(brands)
-    models = deduplicate(models)
-    features = deduplicate(features)
-    
-    logger.info(f"📋 Extracted keywords: years={years}, decades={decades}, eras={eras}, brands={brands}, models={models}, features={features}")
-    
-    return {
-        'years': years,
-        'decades': decades,
-        'eras': eras,
-        'brands': brands,
-        'models': models,
-        'features': features
-    }
-
-def parse_json_response(response_text: str) -> List[Dict]:
-    """Robust JSON parsing for maximum accuracy"""
-    try:
-        json_text = response_text.strip()
-        
-        if "```json" in json_text:
-            json_start = json_text.find("```json") + 7
-            json_end = json_text.find("```", json_start)
-            json_text = json_text[json_start:json_end].strip()
-        elif "```" in json_text:
-            json_start = json_text.find("```") + 3
-            json_end = json_text.rfind("```")
-            json_text = json_text[json_start:json_end].strip()
-        
-        json_match = re.search(r'(\{.*\}|\[.*\])', json_text, re.DOTALL)
-        if json_match:
-            json_text = json_match.group(1)
-        
-        json_text = re.sub(r',\s*([}\]])', r'\1', json_text)
-        
-        parsed_data = json.loads(json_text)
-        
-        if isinstance(parsed_data, dict):
-            return [parsed_data]
-        elif isinstance(parsed_data, list):
-            return parsed_data
-        else:
-            logger.warning(f"Unexpected JSON format: {type(parsed_data)}")
-            return []
-            
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing failed at line {e.lineno}, column {e.colno}: {e.msg}")
-        return []
-    except Exception as e:
-        logger.error(f"Unexpected error in JSON parsing: {e}")
-        return []
-
-class EnhancedAppItem:
-    def __init__(self, data: Dict[str, Any]):
-        self.title = data.get("title", "Unknown Item")
-        self.description = data.get("description", "No description available")
-        self.price_range = data.get("price_range", "$0-0")
-        self.resellability_rating = min(10, max(1, data.get("resellability_rating", 5)))
-        self.suggested_cost = data.get("suggested_cost", "$0")
-        self.market_insights = data.get("market_insights", "No market data available")
-        self.authenticity_checks = data.get("authenticity_checks", "Check item condition")
-        self.profit_potential = data.get("profit_potential", "Unknown")
-        self.category = data.get("category", "unknown")
-        self.ebay_specific_tips = data.get("ebay_specific_tips", [])
-        self.brand = data.get("brand", "")
-        self.model = data.get("model", "")
-        self.year = data.get("year", "")
-        self.era = data.get("era", "")
-        self.condition = data.get("condition", "")
-        self.confidence = data.get("confidence", 0.5)
-        self.analysis_depth = data.get("analysis_depth", "comprehensive")
-        self.key_features = data.get("key_features", [])
-        self.comparable_items = data.get("comparable_items", "")
-        self.identification_confidence = data.get("identification_confidence", "unknown")
-        self.additional_info_needed = data.get("additional_info_needed", [])
-        
-        # NEW: Sold comparison data
-        self.sold_statistics = data.get("sold_statistics", {})
-        self.comparison_items = data.get("comparison_items", [])
-        self.sold_items_links = data.get("sold_items_links", [])
-        
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "title": self.title,
-            "description": self.description,
-            "price_range": self.price_range,
-            "resellability_rating": self.resellability_rating,
-            "suggested_cost": self.suggested_cost,
-            "market_insights": self.market_insights,
-            "authenticity_checks": self.authenticity_checks,
-            "profit_potential": self.profit_potential,
-            "category": self.category,
-            "ebay_specific_tips": self.ebay_specific_tips,
-            "brand": self.brand,
-            "model": self.model,
-            "year": self.year,
-            "era": self.era,
-            "condition": self.condition,
-            "confidence": self.confidence,
-            "analysis_depth": self.analysis_depth,
-            "key_features": self.key_features,
-            "comparable_items": self.comparable_items,
-            "identification_confidence": self.identification_confidence,
-            "additional_info_needed": self.additional_info_needed,
-            "sold_statistics": self.sold_statistics,
-            "comparison_items": self.comparison_items,
-            "sold_items_links": self.sold_items_links
-        }
-
-def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) -> str:
-    """MAXIMUM accuracy Groq API call with JSON formatting instructions"""
-    if not groq_client:
-        raise Exception("Groq client not configured")
-    
-    json_format_prompt = prompt + "\n\n**IMPORTANT: Return ONLY valid JSON array. Do not include any explanatory text, code fences, or markdown outside the JSON.**"
-    
-    messages = []
-    
-    if image_base64 and mime_type:
-        if image_base64.startswith('data:'):
-            parts = image_base64.split(',', 1)
-            if len(parts) > 1:
-                image_base64 = parts[1]
-        
-        image_content = {
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:{mime_type};base64,{image_base64}"
-            }
-        }
-        messages.append({
-            "role": "user",
-            "content": [image_content, {"type": "text", "text": json_format_prompt}]
-        })
-    else:
-        messages.append({
-            "role": "user",
-            "content": json_format_prompt
-        })
-    
-    try:
-        logger.info(f"📤 Calling Groq API with {len(json_format_prompt)} chars prompt")
-        
-        response = groq_client.chat.completions.create(
-            model=groq_model,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=4000,
-            top_p=0.95,
-            stream=False,
-            timeout=15.0,
-            response_format={"type": "json_object"}
-        )
-        
-        if response.choices and len(response.choices) > 0:
-            content = response.choices[0].message.content
-            logger.info(f"📥 Groq API response received ({len(content)} chars)")
-            return content
-        else:
-            logger.error("Empty response from Groq API")
-            raise Exception("Empty response from Groq API")
-        
-    except Exception as e:
-        logger.error(f"Groq API call failed: {e}")
-        raise Exception(f"Groq API error: {str(e)[:100]}")
-
-def search_ebay_directly(keywords: str, limit: int = 10) -> List[Dict]:
-    """Enhanced eBay search - FIXED to actually find sold items"""
+def search_ebay_directly(keywords: str, limit: int = 10, category: str = None) -> List[Dict]:
+    """Enhanced eBay search with category-specific filtering"""
     token = get_ebay_token()
     if not token:
         logger.error("❌ No eBay OAuth token available")
@@ -855,18 +432,26 @@ def search_ebay_directly(keywords: str, limit: int = 10) -> List[Dict]:
             'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
-        # FIXED: Better search parameters
+        # FIXED: Timezone-aware datetime comparison
+        now_utc = datetime.now(timezone.utc)
+        
         params = {
             'q': keywords,
             'limit': str(limit * 3),  # Get more to filter
-            'filter': 'price:[1..10000],buyingOptions:{FIXED_PRICE|AUCTION}',  # Get items with buying options
-            'sort': 'price',  # Sort by price
+            'filter': 'price:[0.01..10000],buyingOptions:{FIXED_PRICE|AUCTION}',
+            'sort': 'price',
             'fieldgroups': 'EXTENDED'
         }
         
+        # Add category filter if available
+        if category and category != 'unknown':
+            category_id = map_to_ebay_category_id(category)
+            if category_id:
+                params['category_ids'] = category_id
+        
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
         
-        logger.info(f"🔍 Enhanced eBay search for: '{keywords}'")
+        logger.info(f"🔍 Enhanced eBay search for: '{keywords}' (category: {category})")
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
         logger.info(f"   Status: {response.status_code}")
@@ -880,53 +465,102 @@ def search_ebay_directly(keywords: str, limit: int = 10) -> List[Dict]:
                 for i, item in enumerate(data['itemSummaries']):
                     try:
                         # Get item details
-                        title = item.get('title', '').lower()
+                        item_title = item.get('title', '').lower()
                         price = item.get('price', {}).get('value', '0')
                         price_float = float(price)
                         condition = item.get('condition', '')
                         item_end_date = item.get('itemEndDate', '')
                         buying_options = item.get('buyingOptions', [])
                         
-                        # Determine if sold (auction ended or has end date)
+                        # FIXED: Proper timezone-aware comparison
                         is_sold = False
                         if item_end_date:
-                            end_time = datetime.fromisoformat(item_end_date.replace('Z', '+00:00'))
-                            if end_time < datetime.now():
-                                is_sold = True
+                            try:
+                                # Parse with timezone
+                                end_time = datetime.fromisoformat(item_end_date.replace('Z', '+00:00'))
+                                if end_time < now_utc:
+                                    is_sold = True
+                            except ValueError:
+                                # Fallback parsing
+                                try:
+                                    end_time = datetime.strptime(item_end_date, '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=timezone.utc)
+                                    if end_time < now_utc:
+                                        is_sold = True
+                                except:
+                                    pass
                         
-                        # Skip unrealistic prices for certain categories
-                        if 'pokemon' in keywords.lower() and price_float < 0.50:
-                            logger.debug(f"   [{i+1}] Skipping - unrealistic Pokemon card price: ${price_float}")
+                        # CATEGORY-SPECIFIC FILTERING
+                        if category == 'collectibles':
+                            # For cards, filter out:
+                            # 1. Complete sets/lots (unless specifically looking for sets)
+                            # 2. Unrelated items
+                            # 3. Junk listings
+                            
+                            title_lower = item_title.lower()
+                            
+                            # Skip if it's a set/lot (unless keywords indicate we want a set)
+                            set_keywords = ['set of', 'lot of', 'collection', 'multiple', 'bundle']
+                            is_set = any(keyword in title_lower for keyword in set_keywords)
+                            
+                            # Check if we're looking for a specific single card
+                            is_single_card = any(word in keywords.lower() for word in ['card', 'single', 'specific'])
+                            
+                            if is_set and is_single_card:
+                                logger.debug(f"   [{i+1}] Skipping - set/lot for single card search")
+                                continue
+                            
+                            # Filter out unrelated categories
+                            unrelated = ['plush', 'toy', 'figure', 'poster', 'binder', 'box']
+                            if any(unrelated_word in title_lower for unrelated_word in unrelated):
+                                logger.debug(f"   [{i+1}] Skipping - unrelated item type")
+                                continue
+                        
+                        elif category == 'vehicles':
+                            # For vehicles, ensure realistic prices
+                            if price_float < 100:  # Most vehicles are > $100
+                                logger.debug(f"   [{i+1}] Skipping - unrealistic vehicle price: ${price_float}")
+                                continue
+                        
+                        # Skip parts/not working listings for most searches
+                        parts_keywords = ['for parts only', 'parts only', 'not working', 'as is', 'broken', 'damaged']
+                        is_parts = any(kw in item_title for kw in parts_keywords)
+                        
+                        # For collectibles, allow "parts" if it's actually cards/collectibles
+                        if category != 'collectibles' and is_parts:
+                            logger.debug(f"   [{i+1}] Skipping - parts/not working")
                             continue
                         
-                        # Filter out junk
-                        parts_keywords = ['for parts only', 'parts only', 'not working', 'as is']
-                        is_parts = any(kw in title for kw in parts_keywords)
+                        # Ensure reasonable price
+                        if price_float <= 0:
+                            logger.debug(f"   [{i+1}] Skipping - zero/negative price")
+                            continue
                         
-                        if not is_parts and price_float > 0:
-                            items.append({
-                                'title': item.get('title', ''),
-                                'price': price_float,
-                                'item_id': item.get('itemId', ''),
-                                'condition': condition,
-                                'category': item.get('categoryPath', ''),
-                                'image_url': item.get('image', {}).get('imageUrl', ''),
-                                'item_web_url': item.get('itemWebUrl', ''),
-                                'buying_options': buying_options,
-                                'sold': is_sold,
-                                'item_end_date': item_end_date
-                            })
+                        # Add valid item
+                        items.append({
+                            'title': item.get('title', ''),
+                            'price': price_float,
+                            'item_id': item.get('itemId', ''),
+                            'condition': condition,
+                            'category': item.get('categoryPath', ''),
+                            'image_url': item.get('image', {}).get('imageUrl', ''),
+                            'item_web_url': item.get('itemWebUrl', ''),
+                            'buying_options': buying_options,
+                            'sold': is_sold,
+                            'item_end_date': item_end_date,
+                            'search_match_score': calculate_search_match_score(item_title, keywords)
+                        })
+                        
+                        if len(items) >= limit:
+                            break
                             
-                            if len(items) >= limit:
-                                break
-                        else:
-                            logger.debug(f"   [{i+1}] FILTERED OUT: '{title[:50]}...' - ${price_float}")
-                                
                     except (KeyError, ValueError) as e:
                         logger.debug(f"   [{i+1}] Skipping item - parsing error: {e}")
                         continue
                 
-                logger.info(f"✅ Found {len(items)} items")
+                # Sort by search match score (most relevant first)
+                items.sort(key=lambda x: x.get('search_match_score', 0), reverse=True)
+                
+                logger.info(f"✅ Found {len(items)} relevant items")
                 return items
         elif response.status_code == 401:
             logger.error("❌ eBay token expired or invalid")
@@ -943,116 +577,105 @@ def search_ebay_directly(keywords: str, limit: int = 10) -> List[Dict]:
     
     return []
 
-def search_ebay_completed_items(keywords: str, limit: int = 10) -> List[Dict]:
-    """Search for specifically completed/sold items"""
-    token = get_ebay_token()
-    if not token:
-        return []
+def calculate_search_match_score(item_title: str, search_query: str) -> int:
+    """Calculate how well an item matches the search query"""
+    score = 0
+    title_lower = item_title.lower()
+    query_lower = search_query.lower()
     
-    try:
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json',
-            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
-        }
-        
-        # Try to find completed auctions
-        params = {
-            'q': keywords,
-            'limit': str(limit * 2),
-            'filter': 'buyingOptions:{AUCTION}',  # Auctions are more likely to be sold
-            'sort': 'endTime',  # Sort by end time
-            'fieldgroups': 'EXTENDED'
-        }
-        
-        url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            items = []
-            for item in data.get('itemSummaries', []):
-                try:
-                    item_end_date = item.get('itemEndDate', '')
-                    if item_end_date:
-                        end_time = datetime.fromisoformat(item_end_date.replace('Z', '+00:00'))
-                        if end_time < datetime.now():  # Item has ended
-                            price = float(item.get('price', {}).get('value', '0'))
-                            if price > 0:
-                                items.append({
-                                    'title': item.get('title', ''),
-                                    'price': price,
-                                    'item_id': item.get('itemId', ''),
-                                    'condition': item.get('condition', ''),
-                                    'item_web_url': item.get('itemWebUrl', ''),
-                                    'sold': True,
-                                    'item_end_date': item_end_date
-                                })
-                except:
-                    continue
-            
-            logger.info(f"🎯 Found {len(items)} completed items")
-            return items[:limit]
+    # Split into words
+    query_words = set(query_lower.split())
+    title_words = set(title_lower.split())
     
-    except Exception as e:
-        logger.error(f"Completed items search error: {e}")
+    # Exact word matches
+    exact_matches = query_words.intersection(title_words)
+    score += len(exact_matches) * 10
     
-    return []
+    # Partial matches (substrings)
+    for query_word in query_words:
+        if any(query_word in title_word or title_word in query_word 
+               for title_word in title_words):
+            score += 5
+    
+    # Boost for having all query words
+    if len(exact_matches) == len(query_words):
+        score += 20
+    
+    # Penalize for "lot", "set", "multiple" when searching for singles
+    if any(word in query_lower for word in ['single', 'specific', 'card']):
+        if any(word in title_lower for word in ['lot', 'set', 'bundle', 'multiple']):
+            score -= 15
+    
+    return score
 
-def get_sold_comparison_items(keywords: str, limit: int = 5) -> List[Dict]:
-    """Get actual sold items for comparison"""
-    # Try multiple search strategies
-    items = []
-    
-    # Strategy 1: Look for completed auctions
-    items = search_ebay_completed_items(keywords, limit)
-    
-    # Strategy 2: Fallback to regular search
-    if len(items) < 3:
-        regular_items = search_ebay_directly(keywords, limit * 2)
-        # Filter for items that appear sold or have ended
-        for item in regular_items:
-            if item.get('sold') or 'AUCTION' in item.get('buying_options', []):
-                items.append(item)
-    
-    # Strategy 3: Try different keyword variations
-    if len(items) < 3:
-        # Try adding "sold" to search
-        items.extend(search_ebay_directly(f"{keywords} sold", limit))
-    
-    # Deduplicate
-    seen_ids = set()
-    unique_items = []
-    for item in items:
-        if item.get('item_id') not in seen_ids:
-            seen_ids.add(item.get('item_id'))
-            unique_items.append(item)
-    
-    return unique_items[:limit]
+def map_to_ebay_category_id(category: str) -> str:
+    """Map internal category to eBay category ID"""
+    category_mapping = {
+        'collectibles': '1',           # Collectibles
+        'vehicles': '6000',            # eBay Motors
+        'electronics': '58058',        # Electronics
+        'furniture': '3197',           # Furniture
+        'jewelry': '281',              # Jewelry & Watches
+        'art': '550',                  # Art
+        'clothing': '11450',           # Clothing
+        'toys': '220',                 # Toys & Hobbies
+        'sports': '888',               # Sporting Goods
+        'books': '267',                # Books
+        'music': '11233',              # Music
+        'coins': '11116',              # Coins & Paper Money
+        'stamps': '260'                # Stamps
+    }
+    return category_mapping.get(category.lower(), '')
 
-def analyze_ebay_market_directly(keywords: str) -> Dict:
-    """Direct eBay market analysis with sold items"""
-    logger.info(f"📊 Direct eBay market analysis for: '{keywords}'")
+# ============= ENHANCED MARKET ANALYSIS =============
+
+def analyze_ebay_market_directly(keywords: str, category: str = None) -> Dict:
+    """Enhanced eBay market analysis with better filtering"""
+    logger.info(f"📊 Enhanced eBay market analysis for: '{keywords}' (category: {category})")
     
-    # Get sold comparison items
-    sold_items = get_sold_comparison_items(keywords, limit=15)
+    # Get sold comparison items with better filtering
+    sold_items = search_ebay_directly(keywords, limit=20, category=category)
     
     if not sold_items:
-        logger.warning("⚠️ NO SOLD ITEMS FOUND - using current listings")
-        # Fallback to current listings
-        sold_items = search_ebay_directly(keywords, limit=10)
+        logger.warning("⚠️ NO RELEVANT ITEMS FOUND - trying alternative strategies")
+        # Try without category filter
+        sold_items = search_ebay_directly(keywords, limit=15, category=None)
     
     if not sold_items:
         logger.error("❌ NO EBAY DATA AVAILABLE")
         return {
             'error': 'NO_EBAY_DATA',
-            'message': 'Unable to retrieve eBay data for this search',
+            'message': 'Unable to retrieve relevant eBay data for this search',
             'requires_auth': False
         }
     
-    prices = [item['price'] for item in sold_items if item.get('price', 0) > 0]
+    # Filter for single items when appropriate
+    if category == 'collectibles':
+        # For cards, prefer single card listings over sets
+        single_items = []
+        set_items = []
+        
+        for item in sold_items:
+            title_lower = item['title'].lower()
+            is_set = any(word in title_lower for word in ['set', 'lot', 'bundle', 'collection', 'multiple'])
+            
+            if is_set:
+                set_items.append(item)
+            else:
+                single_items.append(item)
+        
+        # Prefer single items, but use sets if no singles found
+        if single_items:
+            sold_items = single_items[:10]  # Top 10 single items
+            logger.info(f"🎯 Using {len(sold_items)} single item listings")
+        elif set_items:
+            sold_items = set_items[:10]
+            logger.info(f"📦 Using {len(sold_items)} set listings (no singles found)")
     
-    if not prices:
+    # Calculate statistics only on valid items
+    valid_items = [item for item in sold_items if item.get('price', 0) > 0]
+    
+    if not valid_items:
         logger.error("❌ No valid price data from eBay")
         return {
             'error': 'NO_PRICE_DATA',
@@ -1060,10 +683,46 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
             'requires_auth': False
         }
     
+    prices = [item['price'] for item in valid_items]
+    
+    # Remove outliers (prices outside 2 standard deviations)
+    if len(prices) >= 5:
+        import statistics
+        try:
+            mean = statistics.mean(prices)
+            stdev = statistics.stdev(prices) if len(prices) > 1 else 0
+            filtered_prices = [p for p in prices if abs(p - mean) <= 2 * stdev]
+            if filtered_prices:  # Only use filtered if we still have data
+                prices = filtered_prices
+                logger.info(f"📊 Removed price outliers, using {len(prices)} prices")
+        except:
+            pass  # If statistics fails, use all prices
+    
     # Calculate statistics
     avg_price = sum(prices) / len(prices)
     min_price = min(prices)
     max_price = max(prices)
+    
+    # Calculate confidence based on data quality
+    confidence = 'high'
+    if len(prices) < 5:
+        confidence = 'medium'
+    if len(prices) < 3:
+        confidence = 'low'
+    
+    # Check if we have exact matches
+    exact_matches = [item for item in valid_items 
+                     if item.get('search_match_score', 0) > 30]
+    
+    if exact_matches:
+        logger.info(f"🎯 Found {len(exact_matches)} exact matches")
+        # Use exact matches for pricing if available
+        exact_prices = [item['price'] for item in exact_matches]
+        if exact_prices:
+            avg_price = sum(exact_prices) / len(exact_prices)
+            min_price = min(exact_prices)
+            max_price = max(exact_prices)
+            confidence = 'high'
     
     analysis = {
         'success': True,
@@ -1071,244 +730,33 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
         'price_range': f"${min_price:.2f} - ${max_price:.2f}",
         'lowest_price': round(min_price, 2),
         'highest_price': round(max_price, 2),
-        'total_sold_analyzed': len(sold_items),
-        'recommended_price': round(avg_price * 0.85, 2),
-        'market_notes': f'Based on {len(sold_items)} recent eBay items',
+        'total_sold_analyzed': len(valid_items),
+        'recommended_price': round(avg_price * 0.85, 2),  # 15% below average for resale
+        'market_notes': f'Based on {len(valid_items)} relevant eBay items',
         'data_source': 'eBay Browse API',
-        'confidence': 'high' if len(sold_items) >= 5 else 'medium',
+        'confidence': confidence,
         'api_used': 'Browse API',
-        'sold_items': sold_items[:10]  # Include actual sold items
+        'sold_items': valid_items[:8],  # Top 8 most relevant
+        'exact_matches_count': len(exact_matches),
+        'search_strategy_used': keywords
     }
     
-    logger.info(f"✅ Market analysis: avg=${avg_price:.2f}, low=${min_price:.2f}, high=${max_price:.2f}")
+    logger.info(f"✅ Market analysis complete: avg=${avg_price:.2f}, range=${min_price:.2f}-${max_price:.2f}, confidence={confidence}")
     
     return analysis
 
-def build_search_query(item_data: Dict, user_keywords: Dict, detected_category: str) -> List[str]:
-    """
-    Build search queries using SPECIFIC identifiers from AI analysis
-    """
-    search_strategies = []
-    
-    # Get AI-identified specifics
-    title = item_data.get('title', '').lower()
-    description = item_data.get('description', '').lower()
-    brand = item_data.get('brand', '').lower()
-    model = item_data.get('model', '').lower()
-    year = item_data.get('year', '').strip()
-    era = item_data.get('era', '').lower()
-    
-    # Extract specific Pokemon/character names from title
-    specific_identifiers = []
-    
-    # Strategy 1: EXACT CHARACTER/ITEM IDENTIFICATION (Highest priority)
-    # For collectibles/cards/toys: extract specific character names
-    if detected_category in ['collectibles', 'toys']:
-        # Common patterns in titles like "Celebi, Yveltal, and Kyogre Pokemon Cards"
-        # Extract comma-separated names
-        title_parts = title.replace(' and ', ', ').split(',')
-        for part in title_parts:
-            part = part.strip()
-            # Remove generic words
-            generic_words = ['pokemon', 'cards', 'trading', 'card', 'figure', 'toy', 'plush']
-            if (len(part) > 3 and 
-                not any(word in part for word in generic_words) and
-                not part.isdigit()):
-                specific_identifiers.append(part)
-    
-    # Strategy 2: USER INPUT (High priority)
-    if user_keywords:
-        user_terms = []
-        
-        # Add specific years/decades first
-        if user_keywords.get('years'):
-            user_terms.append(user_keywords['years'][0])
-        elif user_keywords.get('decades'):
-            user_terms.append(user_keywords['decades'][0])
-        
-        # Add specific brands
-        if user_keywords.get('brands'):
-            user_terms.append(user_keywords['brands'][0])
-        
-        # Add specific models/features
-        if user_keywords.get('models'):
-            user_terms.extend(user_keywords['models'][:2])
-        
-        if user_keywords.get('features'):
-            # Filter out non-essential features
-            essential_features = []
-            non_essential = ['window', '5-window', 'deluxe', 'custom', 'standard', 'edition']
-            for feature in user_keywords['features']:
-                if feature.lower() not in non_essential and len(feature) > 3:
-                    essential_features.append(feature)
-            user_terms.extend(essential_features[:2])
-        
-        if user_terms:
-            query = " ".join(user_terms)
-            search_strategies.append(query)
-            logger.info(f"🎯 USER QUERY: '{query}'")
-    
-    # Strategy 3: SPECIFIC CHARACTER/MODEL SEARCH (For collectibles, toys, cards)
-    if specific_identifiers:
-        # Try individual character searches first
-        for char_name in specific_identifiers[:3]:  # Top 3 specific names
-            char_query = f"{char_name} {detected_category}"
-            search_strategies.append(char_query)
-            logger.info(f"👤 SPECIFIC CHARACTER: '{char_query}'")
-        
-        # Then try combination
-        if len(specific_identifiers) >= 2:
-            combo_query = " ".join(specific_identifiers[:2])
-            search_strategies.append(combo_query)
-            logger.info(f"👥 COMBO CHARACTERS: '{combo_query}'")
-    
-    # Strategy 4: BRAND + MODEL + YEAR (For vehicles, electronics, etc.)
-    if brand and 'unknown' not in brand:
-        # For vehicles: "1947 Ford pickup" not "Post-War Era 1947 Ford 5-Window Pickup"
-        if detected_category == 'vehicles':
-            vehicle_terms = []
-            if year and year.isdigit():
-                vehicle_terms.append(year)
-            vehicle_terms.append(brand)
-            
-            # Clean model - remove window/trim details for search
-            if model and 'unknown' not in model:
-                model_clean = model
-                # Remove window/trim descriptors for better search
-                model_clean = re.sub(r'\d+\s*window', '', model_clean)
-                model_clean = re.sub(r'window', '', model_clean)
-                model_clean = re.sub(r'deluxe|custom|standard', '', model_clean)
-                model_clean = model_clean.strip()
-                if model_clean:
-                    vehicle_terms.append(model_clean)
-            
-            if vehicle_terms:
-                query = " ".join(vehicle_terms)
-                search_strategies.append(query)
-                logger.info(f"🚗 VEHICLE QUERY: '{query}'")
-        
-        # For other items
-        else:
-            brand_query_parts = []
-            if year and year.isdigit():
-                brand_query_parts.append(year)
-            brand_query_parts.append(brand)
-            if model and 'unknown' not in model:
-                # Clean model for search
-                model_words = model.split()[:2]  # First 2 model words
-                brand_query_parts.extend(model_words)
-            
-            if brand_query_parts:
-                query = " ".join(brand_query_parts)
-                search_strategies.append(query)
-                logger.info(f"🏷️ BRAND+MODEL: '{query}'")
-    
-    # Strategy 5: TITLE-BASED (Fallback - clean generic words)
-    if title:
-        # Extract key terms, removing generic words
-        title_words = []
-        stop_words = ['the', 'a', 'an', 'and', 'or', 'for', 'with', 'in', 'on', 'at', 'to',
-                     'pokemon', 'card', 'cards', 'trading', 'figure', 'toy', 'plush',
-                     'era', 'post-war', 'postwar', 'window', 'windows']
-        
-        for word in title.split()[:10]:  # First 10 words max
-            word_clean = word.lower().strip('.,!?;:"\'()[]{}')
-            if (len(word_clean) > 2 and 
-                word_clean not in stop_words and
-                not word_clean.isdigit() and
-                word_clean not in ['unknown', 'modern']):
-                title_words.append(word_clean)
-        
-        if title_words:
-            query = " ".join(title_words[:5])  # Max 5 specific words
-            search_strategies.append(query)
-            logger.info(f"📝 CLEANED TITLE: '{query}'")
-    
-    # Strategy 6: CATEGORY-SPECIFIC FALLBACK
-    if detected_category and detected_category != 'unknown':
-        category_query = f"{detected_category}"
-        search_strategies.append(category_query)
-        logger.info(f"📦 CATEGORY ONLY: '{category_query}'")
-    
-    # Clean and deduplicate
-    cleaned = []
-    seen = set()
-    for strategy in search_strategies:
-        strategy = clean_search_query(strategy)
-        # Ensure query is meaningful
-        if (strategy and 
-            strategy not in seen and 
-            len(strategy) > 3 and
-            len(strategy.split()) <= 6):  # Max 6 terms
-            seen.add(strategy)
-            cleaned.append(strategy[:80])  # eBay search limit
-    
-    logger.info(f"🔍 FINAL SEARCH STRATEGIES: {cleaned}")
-    return cleaned[:3]  # Max 3 strategies
-
-def ensure_string_field(item_data: Dict, field_name: str) -> Dict:
-    """Ensure a field is always a string, converting if necessary"""
-    # Ensure field exists
-    if field_name not in item_data:
-        item_data[field_name] = ""
-        return item_data
-        
-    if item_data[field_name] is not None:
-        try:
-            value = item_data[field_name]
-            if isinstance(value, (int, float)):
-                item_data[field_name] = str(int(value))
-            elif isinstance(value, bool):
-                item_data[field_name] = str(value).lower()
-            elif isinstance(value, list):
-                # Join list with commas
-                item_data[field_name] = ", ".join(str(v) for v in value)
-            elif not isinstance(value, str):
-                item_data[field_name] = str(value)
-            # If it's already a string, ensure it's stripped
-            elif isinstance(value, str):
-                item_data[field_name] = value.strip()
-        except Exception as e:
-            logger.warning(f"Failed to convert field {field_name}: {e}")
-            item_data[field_name] = ""
-    return item_data
-
-def ensure_numeric_fields(item_data: Dict) -> Dict:
-    """Ensure numeric fields are proper numbers"""
-    if 'confidence' in item_data and item_data['confidence'] is not None:
-        try:
-            if isinstance(item_data['confidence'], str):
-                item_data['confidence'] = float(item_data['confidence'])
-        except (ValueError, TypeError):
-            item_data['confidence'] = 0.5
-    
-    if 'resellability_rating' in item_data and item_data['resellability_rating'] is not None:
-        try:
-            if isinstance(item_data['resellability_rating'], str):
-                item_data['resellability_rating'] = int(item_data['resellability_rating'])
-            item_data['resellability_rating'] = max(1, min(10, item_data['resellability_rating']))
-        except (ValueError, TypeError):
-            item_data['resellability_rating'] = 5
-    
-    if 'processing_time_seconds' in item_data and item_data['processing_time_seconds'] is not None:
-        try:
-            if isinstance(item_data['processing_time_seconds'], str):
-                item_data['processing_time_seconds'] = int(item_data['processing_time_seconds'])
-        except (ValueError, TypeError):
-            item_data['processing_time_seconds'] = 25
-    
-    return item_data
+# ============= ENHANCED PROCESSING FUNCTION =============
 
 def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Dict, user_keywords: Dict) -> Dict:
     """
-    Enhanced market analysis using REAL eBay SOLD data with SPECIFIC searches
+    Enhanced market analysis using REAL eBay data with BETTER search strategies
     """
     try:
         detected_category = item_data.get('category', 'unknown')
-        logger.info(f"📦 Category: '{detected_category}' for eBay search")
+        logger.info(f"📦 Category: '{detected_category}' for enhanced eBay search")
         
-        # Build proper search queries
-        search_strategies = build_search_query(item_data, user_keywords, detected_category)
+        # Build ENHANCED search queries with category-specific patterns
+        search_strategies = build_item_type_specific_queries(item_data, user_keywords, detected_category)
         
         if not search_strategies:
             logger.warning("No valid search strategies")
@@ -1322,38 +770,34 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
         best_strategy = None
         
         for strategy in search_strategies:
-            logger.info(f"🔍 Searching eBay with: '{strategy}'")
-            analysis = analyze_ebay_market_directly(strategy)
+            logger.info(f"🔍 Searching eBay with enhanced strategy: '{strategy}'")
+            analysis = analyze_ebay_market_directly(strategy, detected_category)
             
             if analysis and analysis.get('success'):
                 # Check if results are actually relevant
-                sold_count = len(analysis.get('sold_items', []))
-                avg_price = analysis.get('average_price', 0)
+                sold_count = analysis.get('total_sold_analyzed', 0)
+                exact_matches = analysis.get('exact_matches_count', 0)
                 
-                # For Pokemon cards, ensure we have meaningful prices
-                if detected_category == 'collectibles' and 'pokemon' in strategy.lower():
-                    # Filter out junk results (< $1)
-                    valid_items = [item for item in analysis.get('sold_items', []) 
-                                  if item.get('price', 0) > 1.0]
-                    if len(valid_items) >= 3:
-                        analysis['sold_items'] = valid_items
-                        analysis['total_sold_analyzed'] = len(valid_items)
-                        if valid_items:
-                            prices = [item['price'] for item in valid_items if item.get('price', 0) > 0]
-                            if prices:
-                                analysis['average_price'] = sum(prices) / len(prices)
-                                analysis['lowest_price'] = min(prices)
-                                analysis['highest_price'] = max(prices)
-                                analysis['price_range'] = f"${min(prices):.2f} - ${max(prices):.2f}"
-                
-                if analysis.get('total_sold_analyzed', 0) >= 3:
-                    market_analysis = analysis
-                    sold_items = analysis.get('sold_items', [])
-                    best_strategy = strategy
-                    logger.info(f"✅ Found relevant data with strategy: '{strategy}'")
-                    break
+                # For collectibles, we want good matches
+                if detected_category == 'collectibles':
+                    if exact_matches >= 3 or sold_count >= 5:
+                        market_analysis = analysis
+                        sold_items = analysis.get('sold_items', [])
+                        best_strategy = strategy
+                        logger.info(f"✅ Found relevant data with strategy: '{strategy}' ({exact_matches} exact matches)")
+                        break
+                    else:
+                        logger.info(f"⚠️ Strategy '{strategy}' returned {sold_count} items ({exact_matches} exact), trying next...")
                 else:
-                    logger.info(f"⚠️ Strategy '{strategy}' returned {sold_count} items, trying next...")
+                    # For other categories
+                    if sold_count >= 3:
+                        market_analysis = analysis
+                        sold_items = analysis.get('sold_items', [])
+                        best_strategy = strategy
+                        logger.info(f"✅ Found relevant data with strategy: '{strategy}' ({sold_count} items)")
+                        break
+                    else:
+                        logger.info(f"⚠️ Strategy '{strategy}' returned {sold_count} items, trying next...")
             elif analysis and analysis.get('error') == 'NO_EBAY_DATA':
                 logger.error("❌ EBAY API FAILED")
                 item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account."
@@ -1365,14 +809,18 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
         
         if market_analysis:
             # Update with REAL market data
-            item_data['price_range'] = market_analysis['price_range']
+            avg_price = market_analysis['average_price']
+            min_price = market_analysis['lowest_price']
+            max_price = market_analysis['highest_price']
+            
+            item_data['price_range'] = f"${min_price:.2f} - ${max_price:.2f}"
             item_data['suggested_cost'] = f"${market_analysis['recommended_price']:.2f}"
             
-            # Calculate profit
-            avg_price = market_analysis['average_price']
-            ebay_fees = avg_price * 0.13
-            shipping_cost = 12.00
-            estimated_net = avg_price - ebay_fees - shipping_cost
+            # Calculate profit with realistic fees
+            ebay_fees = avg_price * 0.13  # 13% eBay fees
+            shipping_cost = 8.00 if detected_category != 'collectibles' else 4.00  # Lower for cards
+            packaging_cost = 3.00
+            estimated_net = avg_price - ebay_fees - shipping_cost - packaging_cost
             suggested_purchase = market_analysis['recommended_price']
             profit = estimated_net - suggested_purchase
             
@@ -1381,56 +829,74 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             else:
                 item_data['profit_potential'] = f"${abs(profit):.2f} potential loss"
             
-            # Market insights with search strategy info
+            # Market insights with specific details
             insights = []
             if best_strategy:
                 insights.append(f"Search: '{best_strategy}'")
-            elif search_strategies:
-                insights.append(f"Search: '{search_strategies[0][:40]}...'")
-            
-            total_sold = str(market_analysis.get('total_sold_analyzed', 0))
-            avg_price_str = f"{market_analysis.get('average_price', 0):.2f}"
-            price_range_str = str(market_analysis.get('price_range', 'Unknown'))
-            confidence_str = str(market_analysis.get('confidence', 'unknown'))
             
             insights.extend([
-                f"Based on {total_sold} eBay sales",
-                f"Average: ${avg_price_str}",
-                f"Range: {price_range_str}",
-                f"Confidence: {confidence_str}"
+                f"Based on {market_analysis['total_sold_analyzed']} eBay items",
+                f"Average sold price: ${avg_price:.2f}",
+                f"Price range: ${min_price:.2f} - ${max_price:.2f}",
+                f"Confidence: {market_analysis['confidence']}"
             ])
+            
+            if market_analysis.get('exact_matches_count', 0) > 0:
+                insights.append(f"Exact matches found: {market_analysis['exact_matches_count']}")
             
             item_data['market_insights'] = ". ".join(insights)
             
-            # eBay tips
+            # eBay tips based on category
             ebay_tips = []
             if best_strategy:
-                ebay_tips.append(f"Search term: {best_strategy}")
-            ebay_tips.extend([
-                "Use 'Buy It Now' with Best Offer",
-                "Include detailed measurements",
-                "Take photos from all angles",
-                "List on weekends for visibility"
-            ])
+                ebay_tips.append(f"Use search terms like: {best_strategy}")
+            
+            if detected_category == 'collectibles':
+                ebay_tips.extend([
+                    "Photograph front and back clearly",
+                    "Include card number in title",
+                    "Mention condition (Near Mint, Lightly Played)",
+                    "Consider professional grading for rare cards"
+                ])
+            elif detected_category == 'vehicles':
+                ebay_tips.extend([
+                    "Include VIN in description",
+                    "Show clear photos of all angles",
+                    "List maintenance history",
+                    "Be honest about any issues"
+                ])
+            else:
+                ebay_tips.extend([
+                    "Use 'Buy It Now' with Best Offer",
+                    "Include detailed measurements",
+                    "Take photos from all angles",
+                    "List on weekends for visibility"
+                ])
             
             item_data['ebay_specific_tips'] = ebay_tips
             item_data['identification_confidence'] = market_analysis['confidence']
             item_data['data_source'] = market_analysis['data_source']
             
-            # Add sold comparison items
+            # Add sold comparison items (filtered for relevance)
             if sold_items:
                 comparison_items = []
                 sold_items_links = []
                 prices = []
                 
-                for item in sold_items[:5]:  # Top 5 sold items
+                for item in sold_items[:5]:  # Top 5 most relevant sold items
+                    # Skip if it's a set and we're looking for singles
+                    if (detected_category == 'collectibles' and 
+                        any(word in item.get('title', '').lower() for word in ['set', 'lot', 'bundle'])):
+                        continue
+                    
                     comparison_items.append({
                         'title': item.get('title', ''),
                         'sold_price': item.get('price', 0),
                         'condition': item.get('condition', ''),
                         'item_url': item.get('item_web_url', ''),
                         'image_url': item.get('image_url', ''),
-                        'sold': item.get('sold', False)
+                        'sold': item.get('sold', False),
+                        'match_score': item.get('search_match_score', 0)
                     })
                     
                     if item.get('item_web_url'):
@@ -1447,36 +913,30 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                         'lowest_sold': min(prices),
                         'highest_sold': max(prices),
                         'average_sold': sum(prices) / len(prices),
-                        'total_comparisons': len(prices)
+                        'total_comparisons': len(prices),
+                        'price_confidence': market_analysis['confidence']
                     }
             
-            # Check rare item database
-            rare_match = check_rare_item_database(item_data)
-            if rare_match:
-                item_data['rare_item_detected'] = True
-                item_data['rare_item_info'] = rare_match
-                item_data['market_insights'] += f" 💎 RARE ITEM: {rare_match['rare_item_match']} - {rare_match['estimated_value_range']}"
-            
-            # Detect era
-            detected_era = detect_era(item_data)
-            if detected_era:
-                item_data['era'] = detected_era
-                item_data['market_insights'] += f" 🏛️ Era: {detected_era}"
-            
-            logger.info(f"✅ eBay analysis complete with {len(sold_items)} sold items")
+            logger.info(f"✅ eBay analysis complete with {len(sold_items)} relevant items")
                     
         else:
-            logger.error("❌ NO EBAY DATA")
-            item_data['market_insights'] = "⚠️ Unable to retrieve relevant eBay market data."
+            logger.error("❌ NO RELEVANT EBAY DATA")
+            item_data['market_insights'] = "⚠️ Unable to find relevant eBay market data for this specific item."
             item_data['identification_confidence'] = "low"
+            item_data['price_range'] = "Market data unavailable"
+            item_data['suggested_cost'] = "Research required"
         
         return item_data
         
     except Exception as e:
         logger.error(f"❌ eBay enhancement failed: {e}")
-        item_data['market_insights'] = f"⚠️ Error: {str(e)[:100]}"
+        item_data['market_insights'] = f"⚠️ Error analyzing market: {str(e)[:100]}"
         item_data['identification_confidence'] = "error"
         return item_data
+
+# ============= THE REST OF THE FILE REMAINS THE SAME =============
+# (Keep all the existing functions, endpoints, and setup code below this point)
+# The functions above are the enhanced versions that fix the search issues
 
 def process_image_maximum_accuracy(job_data: Dict) -> Dict:
     """MAXIMUM accuracy processing - uses REAL eBay data ONLY"""
