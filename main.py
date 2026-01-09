@@ -1086,104 +1086,164 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
 
 def build_search_query(item_data: Dict, user_keywords: Dict, detected_category: str) -> List[str]:
     """
-    Build search queries following REAL user search patterns
+    Build search queries using SPECIFIC identifiers from AI analysis
     """
     search_strategies = []
     
-    # Strategy 1: USER INPUT (highest priority)
+    # Get AI-identified specifics
+    title = item_data.get('title', '').lower()
+    description = item_data.get('description', '').lower()
+    brand = item_data.get('brand', '').lower()
+    model = item_data.get('model', '').lower()
+    year = item_data.get('year', '').strip()
+    era = item_data.get('era', '').lower()
+    
+    # Extract specific Pokemon/character names from title
+    specific_identifiers = []
+    
+    # Strategy 1: EXACT CHARACTER/ITEM IDENTIFICATION (Highest priority)
+    # For collectibles/cards/toys: extract specific character names
+    if detected_category in ['collectibles', 'toys']:
+        # Common patterns in titles like "Celebi, Yveltal, and Kyogre Pokemon Cards"
+        # Extract comma-separated names
+        title_parts = title.replace(' and ', ', ').split(',')
+        for part in title_parts:
+            part = part.strip()
+            # Remove generic words
+            generic_words = ['pokemon', 'cards', 'trading', 'card', 'figure', 'toy', 'plush']
+            if (len(part) > 3 and 
+                not any(word in part for word in generic_words) and
+                not part.isdigit()):
+                specific_identifiers.append(part)
+    
+    # Strategy 2: USER INPUT (High priority)
     if user_keywords:
         user_terms = []
         
-        # Add decade/era FIRST (if available)
-        if user_keywords.get('decades'):
-            user_terms.append(user_keywords['decades'][0])
-        elif user_keywords.get('eras'):
-            user_terms.append(user_keywords['eras'][0])
-        
-        # Add year SECOND (if available and no decade)
-        if user_keywords.get('years') and not user_keywords.get('decades'):
+        # Add specific years/decades first
+        if user_keywords.get('years'):
             user_terms.append(user_keywords['years'][0])
+        elif user_keywords.get('decades'):
+            user_terms.append(user_keywords['decades'][0])
         
-        # Add brand THIRD
+        # Add specific brands
         if user_keywords.get('brands'):
             user_terms.append(user_keywords['brands'][0])
         
-        # Add model/features FOURTH
+        # Add specific models/features
         if user_keywords.get('models'):
             user_terms.extend(user_keywords['models'][:2])
         
         if user_keywords.get('features'):
-            user_terms.extend(user_keywords['features'][:2])
+            # Filter out non-essential features
+            essential_features = []
+            non_essential = ['window', '5-window', 'deluxe', 'custom', 'standard', 'edition']
+            for feature in user_keywords['features']:
+                if feature.lower() not in non_essential and len(feature) > 3:
+                    essential_features.append(feature)
+            user_terms.extend(essential_features[:2])
         
         if user_terms:
             query = " ".join(user_terms)
             search_strategies.append(query)
             logger.info(f"🎯 USER QUERY: '{query}'")
     
-    # Strategy 2: AI-DETECTED DATA (secondary)
-    ai_terms = []
-    
-    # Check for era first
-    era = item_data.get('era', '').strip()
-    if era and era.lower() not in ['unknown', 'modern']:
-        ai_terms.append(era)
-    
-    # Year second
-    year = item_data.get('year', '').strip()
-    if year and year.isdigit() and len(year) == 4:
-        ai_terms.append(year)
-    
-    # Brand third
-    brand = item_data.get('brand', '').strip()
-    if brand and 'unknown' not in brand.lower():
-        ai_terms.append(brand)
-    
-    # Model fourth (clean it first)
-    model = item_data.get('model', '').strip()
-    if model and 'unknown' not in model.lower():
-        # Clean model - remove generic words
-        model_words = []
-        generic_words = ['model', 'type', 'style', 'series', 'version', 'edition']
-        for word in model.split()[:3]:
-            if word.lower() not in generic_words and len(word) > 2:
-                model_words.append(word)
+    # Strategy 3: SPECIFIC CHARACTER/MODEL SEARCH (For collectibles, toys, cards)
+    if specific_identifiers:
+        # Try individual character searches first
+        for char_name in specific_identifiers[:3]:  # Top 3 specific names
+            char_query = f"{char_name} {detected_category}"
+            search_strategies.append(char_query)
+            logger.info(f"👤 SPECIFIC CHARACTER: '{char_query}'")
         
-        if model_words:
-            ai_terms.extend(model_words)
+        # Then try combination
+        if len(specific_identifiers) >= 2:
+            combo_query = " ".join(specific_identifiers[:2])
+            search_strategies.append(combo_query)
+            logger.info(f"👥 COMBO CHARACTERS: '{combo_query}'")
     
-    if ai_terms:
-        query = " ".join(ai_terms)
-        search_strategies.append(query)
-        logger.info(f"🤖 AI QUERY: '{query}'")
+    # Strategy 4: BRAND + MODEL + YEAR (For vehicles, electronics, etc.)
+    if brand and 'unknown' not in brand:
+        # For vehicles: "1947 Ford pickup" not "Post-War Era 1947 Ford 5-Window Pickup"
+        if detected_category == 'vehicles':
+            vehicle_terms = []
+            if year and year.isdigit():
+                vehicle_terms.append(year)
+            vehicle_terms.append(brand)
+            
+            # Clean model - remove window/trim details for search
+            if model and 'unknown' not in model:
+                model_clean = model
+                # Remove window/trim descriptors for better search
+                model_clean = re.sub(r'\d+\s*window', '', model_clean)
+                model_clean = re.sub(r'window', '', model_clean)
+                model_clean = re.sub(r'deluxe|custom|standard', '', model_clean)
+                model_clean = model_clean.strip()
+                if model_clean:
+                    vehicle_terms.append(model_clean)
+            
+            if vehicle_terms:
+                query = " ".join(vehicle_terms)
+                search_strategies.append(query)
+                logger.info(f"🚗 VEHICLE QUERY: '{query}'")
+        
+        # For other items
+        else:
+            brand_query_parts = []
+            if year and year.isdigit():
+                brand_query_parts.append(year)
+            brand_query_parts.append(brand)
+            if model and 'unknown' not in model:
+                # Clean model for search
+                model_words = model.split()[:2]  # First 2 model words
+                brand_query_parts.extend(model_words)
+            
+            if brand_query_parts:
+                query = " ".join(brand_query_parts)
+                search_strategies.append(query)
+                logger.info(f"🏷️ BRAND+MODEL: '{query}'")
     
-    # Strategy 3: TITLE-BASED SEARCH (fallback)
-    title = item_data.get('title', '').strip()
+    # Strategy 5: TITLE-BASED (Fallback - clean generic words)
     if title:
-        # Extract key terms from title
+        # Extract key terms, removing generic words
         title_words = []
-        stop_words = ['the', 'a', 'an', 'and', 'or', 'for', 'with', 'in', 'on', 'at', 'to']
+        stop_words = ['the', 'a', 'an', 'and', 'or', 'for', 'with', 'in', 'on', 'at', 'to',
+                     'pokemon', 'card', 'cards', 'trading', 'figure', 'toy', 'plush',
+                     'era', 'post-war', 'postwar', 'window', 'windows']
         
-        for word in title.split()[:8]:
-            word_clean = word.lower().strip('.,!?;:"\'')
+        for word in title.split()[:10]:  # First 10 words max
+            word_clean = word.lower().strip('.,!?;:"\'()[]{}')
             if (len(word_clean) > 2 and 
                 word_clean not in stop_words and
-                not word_clean.isdigit()):
-                title_words.append(word)
+                not word_clean.isdigit() and
+                word_clean not in ['unknown', 'modern']):
+                title_words.append(word_clean)
         
         if title_words:
-            query = " ".join(title_words[:5])
+            query = " ".join(title_words[:5])  # Max 5 specific words
             search_strategies.append(query)
-            logger.info(f"📝 TITLE QUERY: '{query}'")
+            logger.info(f"📝 CLEANED TITLE: '{query}'")
+    
+    # Strategy 6: CATEGORY-SPECIFIC FALLBACK
+    if detected_category and detected_category != 'unknown':
+        category_query = f"{detected_category}"
+        search_strategies.append(category_query)
+        logger.info(f"📦 CATEGORY ONLY: '{category_query}'")
     
     # Clean and deduplicate
     cleaned = []
     seen = set()
     for strategy in search_strategies:
         strategy = clean_search_query(strategy)
-        if strategy and strategy not in seen and len(strategy) > 3:
+        # Ensure query is meaningful
+        if (strategy and 
+            strategy not in seen and 
+            len(strategy) > 3 and
+            len(strategy.split()) <= 6):  # Max 6 terms
             seen.add(strategy)
             cleaned.append(strategy[:80])  # eBay search limit
     
+    logger.info(f"🔍 FINAL SEARCH STRATEGIES: {cleaned}")
     return cleaned[:3]  # Max 3 strategies
 
 def ensure_string_field(item_data: Dict, field_name: str) -> Dict:
@@ -1241,7 +1301,7 @@ def ensure_numeric_fields(item_data: Dict) -> Dict:
 
 def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Dict, user_keywords: Dict) -> Dict:
     """
-    Enhanced market analysis using REAL eBay SOLD data with USER-PRIORITIZED search
+    Enhanced market analysis using REAL eBay SOLD data with SPECIFIC searches
     """
     try:
         detected_category = item_data.get('category', 'unknown')
@@ -1256,21 +1316,44 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             item_data['identification_confidence'] = "low"
             return item_data
         
-        # Try to get REAL eBay market analysis
+        # Try to get REAL eBay market analysis with each strategy
         market_analysis = None
         sold_items = []
+        best_strategy = None
         
         for strategy in search_strategies:
             logger.info(f"🔍 Searching eBay with: '{strategy}'")
             analysis = analyze_ebay_market_directly(strategy)
             
             if analysis and analysis.get('success'):
-                market_analysis = analysis
-                sold_items = analysis.get('sold_items', [])
-                break
-            elif analysis and analysis.get('error') == 'NO_COMPLETE_ITEMS':
-                logger.error("❌ NO COMPLETE ITEMS FOUND - trying different search")
-                continue
+                # Check if results are actually relevant
+                sold_count = len(analysis.get('sold_items', []))
+                avg_price = analysis.get('average_price', 0)
+                
+                # For Pokemon cards, ensure we have meaningful prices
+                if detected_category == 'collectibles' and 'pokemon' in strategy.lower():
+                    # Filter out junk results (< $1)
+                    valid_items = [item for item in analysis.get('sold_items', []) 
+                                  if item.get('price', 0) > 1.0]
+                    if len(valid_items) >= 3:
+                        analysis['sold_items'] = valid_items
+                        analysis['total_sold_analyzed'] = len(valid_items)
+                        if valid_items:
+                            prices = [item['price'] for item in valid_items if item.get('price', 0) > 0]
+                            if prices:
+                                analysis['average_price'] = sum(prices) / len(prices)
+                                analysis['lowest_price'] = min(prices)
+                                analysis['highest_price'] = max(prices)
+                                analysis['price_range'] = f"${min(prices):.2f} - ${max(prices):.2f}"
+                
+                if analysis.get('total_sold_analyzed', 0) >= 3:
+                    market_analysis = analysis
+                    sold_items = analysis.get('sold_items', [])
+                    best_strategy = strategy
+                    logger.info(f"✅ Found relevant data with strategy: '{strategy}'")
+                    break
+                else:
+                    logger.info(f"⚠️ Strategy '{strategy}' returned {sold_count} items, trying next...")
             elif analysis and analysis.get('error') == 'NO_EBAY_DATA':
                 logger.error("❌ EBAY API FAILED")
                 item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account."
@@ -1298,12 +1381,12 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             else:
                 item_data['profit_potential'] = f"${abs(profit):.2f} potential loss"
             
-            # Market insights
+            # Market insights with search strategy info
             insights = []
-            if user_keywords:
-                insights.append("Search prioritized by user input")
-            else:
-                insights.append("Search based on AI analysis")
+            if best_strategy:
+                insights.append(f"Search: '{best_strategy}'")
+            elif search_strategies:
+                insights.append(f"Search: '{search_strategies[0][:40]}...'")
             
             total_sold = str(market_analysis.get('total_sold_analyzed', 0))
             avg_price_str = f"{market_analysis.get('average_price', 0):.2f}"
@@ -1311,7 +1394,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             confidence_str = str(market_analysis.get('confidence', 'unknown'))
             
             insights.extend([
-                f"Based on {total_sold} actual eBay sales",
+                f"Based on {total_sold} eBay sales",
                 f"Average: ${avg_price_str}",
                 f"Range: {price_range_str}",
                 f"Confidence: {confidence_str}"
@@ -1321,8 +1404,8 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             
             # eBay tips
             ebay_tips = []
-            if search_strategies:
-                ebay_tips.append(f"Search: {search_strategies[0][:40]}")
+            if best_strategy:
+                ebay_tips.append(f"Search term: {best_strategy}")
             ebay_tips.extend([
                 "Use 'Buy It Now' with Best Offer",
                 "Include detailed measurements",
@@ -1384,7 +1467,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                     
         else:
             logger.error("❌ NO EBAY DATA")
-            item_data['market_insights'] = "⚠️ Unable to retrieve eBay market data."
+            item_data['market_insights'] = "⚠️ Unable to retrieve relevant eBay market data."
             item_data['identification_confidence'] = "low"
         
         return item_data
@@ -1484,17 +1567,26 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 
                 logger.info(f"📦 CATEGORY: '{detected_category}'")
                 
+                # Check if we have eBay token before attempting search
+                ebay_token = get_ebay_token()
+                if not ebay_token:
+                    logger.error("❌ No eBay token available for search")
+                    item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account."
+                    item_data['price_range'] = "Authentication Required"
+                    item_data['suggested_cost'] = "Connect eBay Account"
+                    item_data['profit_potential'] = "eBay data unavailable"
+                    item_data['identification_confidence'] = "requires_auth"
+                    
+                    enhanced_items.append(EnhancedAppItem(item_data).to_dict())
+                    continue
+                
                 # Enhance with REAL eBay market data
                 item_data = enhance_with_ebay_data_user_prioritized(item_data, vision_analysis, user_keywords)
                 
                 # Check if eBay auth required
                 if item_data.get('identification_confidence') == 'requires_auth':
-                    return {
-                        "status": "failed",
-                        "error": "EBAY_AUTH_REQUIRED",
-                        "message": "eBay authentication required",
-                        "requires_auth": True
-                    }
+                    # Don't return auth error for entire batch, just mark this item
+                    logger.warning("⚠️ Item requires eBay auth")
                 
                 # Ensure required fields
                 if not item_data.get('brand'):
