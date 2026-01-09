@@ -1,5 +1,8 @@
 # JOB QUEUE + POLLING SYSTEM - MAXIMUM ACCURACY ONLY
 # Enhanced search strategies with eBay soldItems filter
+# Added: Image coverage analysis for vehicle/part detection
+# Added: Long-term token support (2-year refresh tokens)
+# Added: Guaranteed sold item links in responses
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +30,12 @@ import hmac
 import hashlib
 import urllib.parse
 
+# Add these imports for image analysis
+import cv2
+import numpy as np
+from PIL import Image
+import io
+
 # Load environment variables
 load_dotenv()
 
@@ -39,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Resell Pro API - Enhanced Search", 
-    version="4.2.0",
+    version="4.3.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -843,10 +852,10 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
 
 # ============= ENHANCED EBAY SEARCH WITH soldItems FILTER =============
 
-def search_ebay_sold_items(keywords: str, limit: int = 10, category: str = None) -> List[Dict]:
+def search_ebay_sold_items(keywords: str, limit: int = 10, category: str = None, is_whole_vehicle: bool = True) -> List[Dict]:
     """
     Search for ACTUALLY SOLD items on eBay using soldItems filter
-    This returns items that have ACTUALLY sold (auctions with bids/reserve met)
+    Enhanced with vehicle/part detection and proper URL handling
     """
     token = get_ebay_token()
     if not token:
@@ -860,9 +869,17 @@ def search_ebay_sold_items(keywords: str, limit: int = 10, category: str = None)
             'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
+        # For vehicles: modify search if it's a part
+        search_keywords = keywords
+        if category == 'vehicles' and not is_whole_vehicle:
+            # Add part-related terms
+            if 'part' not in keywords.lower() and 'parts' not in keywords.lower():
+                search_keywords = f"{keywords} part"
+                logger.info(f"🔧 MODIFIED VEHICLE SEARCH: '{search_keywords}' (searching for parts)")
+        
         # KEY FILTER: soldItems:true returns ONLY items that have SOLD
         params = {
-            'q': keywords,
+            'q': search_keywords,
             'limit': str(limit),
             'filter': 'soldItems:true',  # MAGIC FILTER - only actually sold items
             'sort': '-endTime',  # Most recent sold items first
@@ -877,7 +894,7 @@ def search_ebay_sold_items(keywords: str, limit: int = 10, category: str = None)
         
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
         
-        logger.info(f"🔍 Searching eBay SOLD ITEMS for: '{keywords}' (category: {category})")
+        logger.info(f"🔍 Searching eBay SOLD ITEMS for: '{search_keywords}' (category: {category}, whole_vehicle: {is_whole_vehicle})")
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
         logger.info(f"   Status: {response.status_code}")
@@ -894,8 +911,21 @@ def search_ebay_sold_items(keywords: str, limit: int = 10, category: str = None)
                         price_float = float(price)
                         condition = item.get('condition', '')
                         
-                        # These items are GUARANTEED to be SOLD by eBay's filter
-                        # The price is the ACTUAL FINAL sale price
+                        # ✅ ENSURE WE GET THE ITEM WEB URL
+                        item_web_url = item.get('itemWebUrl', '')
+                        if not item_web_url:
+                            # Construct URL if not provided
+                            item_id = item.get('itemId', '')
+                            if item_id:
+                                item_web_url = f"https://www.ebay.com/itm/{item_id}"
+                        
+                        # ✅ ENSURE WE GET IMAGE URL
+                        image_url = ''
+                        if 'image' in item:
+                            if isinstance(item['image'], dict):
+                                image_url = item['image'].get('imageUrl', '')
+                            elif isinstance(item['image'], str):
+                                image_url = item['image']
                         
                         items.append({
                             'title': item_title,
@@ -903,21 +933,21 @@ def search_ebay_sold_items(keywords: str, limit: int = 10, category: str = None)
                             'item_id': item.get('itemId', ''),
                             'condition': condition,
                             'category': item.get('categoryPath', ''),
-                            'image_url': item.get('image', {}).get('imageUrl', ''),
-                            'item_web_url': item.get('itemWebUrl', ''),
+                            'image_url': image_url,
+                            'item_web_url': item_web_url,  # ✅ ALWAYS include
                             'sold': True,  # Guaranteed by soldItems:true filter
                             'item_end_date': item.get('itemEndDate', ''),
                             'search_match_score': calculate_search_match_score(item_title.lower(), keywords),
                             'data_source': 'eBay Sold Items Filter'
                         })
                         
-                        logger.debug(f"   [{i+1}] SOLD: '{item_title[:50]}...' - ${price_float:.2f}")
+                        logger.debug(f"   [{i+1}] SOLD: '{item_title[:50]}...' - ${price_float:.2f} - URL: {item_web_url[:50] if item_web_url else 'No URL'}")
                         
                     except (KeyError, ValueError) as e:
                         logger.debug(f"   [{i+1}] Skipping sold item - parsing error: {e}")
                         continue
                 
-                logger.info(f"✅ Found {len(items)} ACTUAL SOLD items")
+                logger.info(f"✅ Found {len(items)} ACTUAL SOLD items with {sum(1 for i in items if i['item_web_url'])} valid URLs")
                 return items
         elif response.status_code == 401:
             logger.error("❌ eBay token expired or invalid")
@@ -1268,12 +1298,115 @@ def build_user_keyword_queries(user_keywords: Dict, category: str) -> List[str]:
     
     return queries
 
-def analyze_ebay_market_directly(keywords: str, category: str = None) -> Dict:
-    """Get ACTUAL sold prices from eBay using soldItems filter"""
-    logger.info(f"📊 Getting ACTUAL sold prices for: '{keywords}' (category: {category})")
+# ============= IMAGE COVERAGE ANALYSIS FOR VEHICLE/PART DETECTION =============
+
+def analyze_image_coverage(image_base64: str, mime_type: str) -> Dict:
+    """
+    Analyze image to determine if item appears to be a whole item or just a part.
+    Returns coverage percentage and bounding box info.
+    """
+    try:
+        # Decode base64 image
+        if image_base64.startswith('data:'):
+            parts = image_base64.split(',', 1)
+            if len(parts) > 1:
+                image_base64 = parts[1]
+        
+        image_data = base64.b64decode(image_base64)
+        nparr = np.frombuffer(image_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return {"coverage_percentage": 0, "is_likely_whole_item": False, "error": "Failed to decode image"}
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Apply threshold to find object edges
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Find contours
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return {"coverage_percentage": 0, "is_likely_whole_item": False, "error": "No contours found"}
+        
+        # Find largest contour (main object)
+        largest_contour = max(contours, key=cv2.contourArea)
+        
+        # Get bounding rectangle
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        
+        # Calculate coverage percentage
+        img_area = img.shape[0] * img.shape[1]
+        object_area = w * h
+        coverage_percentage = (object_area / img_area) * 100
+        
+        # Determine if likely whole item
+        # Rules: If coverage > 60% and aspect ratio suggests complete item
+        aspect_ratio = w / h if h > 0 else 0
+        is_likely_whole_item = (
+            coverage_percentage > 60 and 
+            0.3 < aspect_ratio < 3.0 and  # Not too tall/skinny
+            coverage_percentage < 95  # Not filling entire frame
+        )
+        
+        return {
+            "coverage_percentage": round(coverage_percentage, 1),
+            "is_likely_whole_item": is_likely_whole_item,
+            "bounding_box": {"x": x, "y": y, "width": w, "height": h},
+            "image_dimensions": {"width": img.shape[1], "height": img.shape[0]},
+            "aspect_ratio": round(aspect_ratio, 2),
+            "object_area": object_area,
+            "total_area": img_area
+        }
+        
+    except Exception as e:
+        logger.error(f"Image coverage analysis error: {e}")
+        return {"coverage_percentage": 0, "is_likely_whole_item": False, "error": str(e)}
+
+def is_vehicle_part_vs_whole(item_data: Dict, image_coverage: Dict, search_query: str) -> bool:
+    """
+    Determine if we should search for parts or whole vehicles.
+    Returns True if we should search for whole vehicles, False for parts.
+    """
+    category = item_data.get('category', '').lower()
+    
+    # Only apply to vehicles
+    if category != 'vehicles':
+        return True  # Default to searching whole items for non-vehicles
+    
+    # Check coverage analysis
+    coverage_pct = image_coverage.get('coverage_percentage', 0)
+    is_likely_whole = image_coverage.get('is_likely_whole_item', False)
+    
+    # If coverage > 70% and analysis says likely whole item, search for whole vehicles
+    if coverage_pct > 70 and is_likely_whole:
+        logger.info(f"🚗 VEHICLE DETECTION: High coverage ({coverage_pct}%), searching for WHOLE vehicles")
+        return True
+    
+    # Check query for part indicators
+    part_indicators = [
+        'part', 'parts', 'component', 'assembly', 'engine', 'transmission',
+        'headlight', 'taillight', 'bumper', 'fender', 'door', 'hood',
+        'wheel', 'tire', 'rim', 'mirror', 'seat', 'dashboard'
+    ]
+    
+    query_lower = search_query.lower()
+    for indicator in part_indicators:
+        if indicator in query_lower:
+            logger.info(f"🔧 PART DETECTION: Found '{indicator}' in query, searching for PARTS")
+            return False
+    
+    # Default to whole vehicles if no clear part indicators
+    return True
+
+def analyze_ebay_market_directly(keywords: str, category: str = None, is_whole_vehicle: bool = True) -> Dict:
+    """Get ACTUAL sold prices from eBay using soldItems filter with vehicle/part detection"""
+    logger.info(f"📊 Getting ACTUAL sold prices for: '{keywords}' (category: {category}, whole_vehicle: {is_whole_vehicle})")
     
     # Get ACTUALLY SOLD items using eBay's soldItems filter
-    sold_items = search_ebay_sold_items(keywords, limit=15, category=category)
+    sold_items = search_ebay_sold_items(keywords, limit=15, category=category, is_whole_vehicle=is_whole_vehicle)
     
     if not sold_items:
         logger.warning(f"⚠️ No ACTUAL sold items found for '{keywords}'")
@@ -1334,7 +1467,8 @@ def analyze_ebay_market_directly(keywords: str, category: str = None) -> Dict:
         'api_used': 'Browse API with soldItems:true',
         'sold_items': sold_items[:8],  # Top 8 most relevant ACTUAL sales
         'guaranteed_sold': True,  # Flag that these are actual sales
-        'search_strategy_used': keywords
+        'search_strategy_used': keywords,
+        'has_sold_item_links': any(item.get('item_web_url') for item in sold_items[:8])
     }
     
     logger.info(f"✅ REAL market data: {len(sold_items)} actual sales, avg=${avg_price:.2f}, range=${min_price:.2f}-${max_price:.2f}")
@@ -1394,13 +1528,21 @@ def ensure_numeric_fields(item_data: Dict) -> Dict:
     
     return item_data
 
-def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Dict, user_keywords: Dict) -> Dict:
+def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Dict, 
+                                           user_keywords: Dict, image_base64: str = None) -> Dict:
     """
     Enhanced market analysis using ACTUAL eBay SOLD data with soldItems filter
+    Now includes image coverage analysis for vehicle/part detection
     """
     try:
         detected_category = item_data.get('category', 'unknown')
         logger.info(f"📦 Category: '{detected_category}' for eBay sold items search")
+        
+        # Analyze image coverage for vehicle/part detection
+        image_coverage = {"coverage_percentage": 0, "is_likely_whole_item": False}
+        if image_base64 and detected_category == 'vehicles':
+            image_coverage = analyze_image_coverage(image_base64, 'image/jpeg')
+            logger.info(f"📐 Image coverage analysis: {image_coverage.get('coverage_percentage', 0)}% coverage, whole_item: {image_coverage.get('is_likely_whole_item', False)}")
         
         # Build ENHANCED search queries with category-specific patterns
         search_strategies = build_item_type_specific_queries(item_data, user_keywords, detected_category)
@@ -1418,7 +1560,16 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
         
         for strategy in search_strategies:
             logger.info(f"🔍 Searching eBay SOLD ITEMS with: '{strategy}'")
-            analysis = analyze_ebay_market_directly(strategy, detected_category)
+            
+            # Determine if we should search for whole vehicles or parts
+            is_whole_vehicle = True
+            if detected_category == 'vehicles':
+                is_whole_vehicle = is_vehicle_part_vs_whole(item_data, image_coverage, strategy)
+                # Add to item data for debugging
+                item_data['image_coverage_analysis'] = image_coverage
+                item_data['search_for_whole_vehicle'] = is_whole_vehicle
+            
+            analysis = analyze_ebay_market_directly(strategy, detected_category, is_whole_vehicle)
             
             if analysis and analysis.get('success'):
                 # Check if we have enough data
@@ -1469,6 +1620,12 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             if best_strategy:
                 insights.append(f"Search: '{best_strategy}'")
             
+            if detected_category == 'vehicles' and 'search_for_whole_vehicle' in item_data:
+                if item_data['search_for_whole_vehicle']:
+                    insights.append("Searching for WHOLE vehicles (not parts)")
+                else:
+                    insights.append("Searching for vehicle PARTS")
+            
             insights.extend([
                 f"Based on {market_analysis['total_sold_analyzed']} ACTUAL eBay sales",
                 f"Average sold price: ${avg_price:.2f}",
@@ -1515,25 +1672,32 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 sold_items_links = []
                 prices = []
                 
-                for item in sold_items[:5]:  # Top 5 most relevant SOLD items
+                for item in sold_items[:8]:  # Increased to 8 items for better comparison
                     # For collectibles, skip sets when we have a specific card
                     if (detected_category == 'collectibles' and 
+                        best_strategy and
                         'card' in best_strategy.lower() and
                         any(word in item.get('title', '').lower() for word in ['set', 'lot', 'bundle'])):
                         continue
+                    
+                    # ✅ ENSURE WE HAVE A VALID URL
+                    item_url = item.get('item_web_url', '')
+                    if not item_url and item.get('item_id'):
+                        item_url = f"https://www.ebay.com/itm/{item['item_id']}"
                     
                     comparison_items.append({
                         'title': item.get('title', ''),
                         'sold_price': item.get('price', 0),
                         'condition': item.get('condition', ''),
-                        'item_url': item.get('item_web_url', ''),
+                        'item_url': item_url,  # ✅ Always include URL
                         'image_url': item.get('image_url', ''),
                         'sold': True,  # Guaranteed sold
-                        'match_score': item.get('search_match_score', 0)
+                        'match_score': item.get('search_match_score', 0),
+                        'item_id': item.get('item_id', '')
                     })
                     
-                    if item.get('item_web_url'):
-                        sold_items_links.append(item['item_web_url'])
+                    if item_url:
+                        sold_items_links.append(item_url)
                     
                     if item.get('price', 0) > 0:
                         prices.append(item['price'])
@@ -1564,7 +1728,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 item_data['era'] = detected_era
                 item_data['market_insights'] += f" 🏛️ Era: {detected_era}"
             
-            logger.info(f"✅ eBay SOLD analysis complete with {len(sold_items)} actual sales")
+            logger.info(f"✅ eBay SOLD analysis complete with {len(sold_items)} actual sales, {len(sold_items_links)} links")
                     
         else:
             logger.error("❌ NO RELEVANT SOLD DATA")
@@ -1582,7 +1746,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
         return item_data
 
 def process_image_maximum_accuracy(job_data: Dict) -> Dict:
-    """MAXIMUM accuracy processing - uses ACTUAL eBay SOLD data ONLY"""
+    """MAXIMUM accuracy processing - uses ACTUAL eBay SOLD data ONLY with image coverage analysis"""
     try:
         if not groq_client:
             return {"status": "failed", "error": "Groq client not configured"}
@@ -1625,13 +1789,14 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 if user_keywords.get('features'):
                     enhanced_prompt += f"- **FEATURES:** {', '.join(user_keywords['features'][:5])}\n"
         
-        enhanced_prompt += "\n\n🔍 **SEARCH PRIORITIZATION RULES:**\n"
-        enhanced_prompt += "1. User details take ABSOLUTE precedence\n"
-        enhanced_prompt += "2. For cards: '[Card Name] [Set] [Card Number] [Year] [Features]'\n"
-        enhanced_prompt += "3. For vehicles: '[Year] [Make] [Model]'\n"
-        enhanced_prompt += "4. For antiques: '[Era] [Item Type] [Material]'\n"
+        enhanced_prompt += "\n\n🔍 **IMAGE COVERAGE ANALYSIS:**\n"
+        enhanced_prompt += "If analyzing a vehicle, determine if the image shows:\n"
+        enhanced_prompt += "1. ENTIRE VEHICLE (70%+ of image, clear boundaries)\n"
+        enhanced_prompt += "2. LARGE PART (engine, transmission, major assembly)\n"
+        enhanced_prompt += "3. SMALL PART (mirror, light, trim piece)\n"
+        enhanced_prompt += "This affects whether to search for 'vehicle' or 'part' on eBay.\n"
         
-        logger.info(f"🔬 Starting analysis with ACTUAL eBay SOLD data...")
+        logger.info(f"🔬 Starting analysis with ACTUAL eBay SOLD data and image coverage...")
         
         # Call Groq API
         response_text = call_groq_api(enhanced_prompt, image_base64, mime_type)
@@ -1683,8 +1848,13 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                     enhanced_items.append(EnhancedAppItem(item_data).to_dict())
                     continue
                 
-                # Enhance with ACTUAL eBay SOLD market data
-                item_data = enhance_with_ebay_data_user_prioritized(item_data, vision_analysis, user_keywords)
+                # Enhance with ACTUAL eBay SOLD market data WITH IMAGE COVERAGE ANALYSIS
+                item_data = enhance_with_ebay_data_user_prioritized(
+                    item_data, 
+                    vision_analysis, 
+                    user_keywords,
+                    image_base64  # ✅ Pass image for coverage analysis
+                )
                 
                 # Check if eBay auth required
                 if item_data.get('identification_confidence') == 'requires_auth':
@@ -1747,6 +1917,7 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 "ebay_data_used": True,
                 "user_details_incorporated": bool(user_title or user_description),
                 "sold_items_included": any('comparison_items' in item for item in enhanced_items),
+                "sold_item_links_included": any('sold_items_links' in item for item in enhanced_items),
                 "data_source": "eBay soldItems filter"
             }
         }
@@ -1833,7 +2004,7 @@ async def startup_event():
     
     threading.Thread(target=keep_alive_loop, daemon=True, name="KeepAlive").start()
     
-    logger.info("🚀 Server started with ACTUAL eBay SOLD data")
+    logger.info("🚀 Server started with ACTUAL eBay SOLD data and image coverage analysis")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1901,7 +2072,7 @@ async def debug_ebay_search(keywords: str):
 
 @app.get("/ebay/oauth/start")
 async def get_ebay_auth_url():
-    """Generate eBay OAuth authorization URL"""
+    """Generate eBay OAuth authorization URL with long-term token support"""
     update_activity()
     
     try:
@@ -1912,14 +2083,15 @@ async def get_ebay_auth_url():
         
         auth_url, state = ebay_oauth.generate_auth_url()
         
-        logger.info(f"🔗 Generated auth URL")
+        logger.info(f"🔗 Generated auth URL for long-term token (2 years)")
         
         return {
             "success": True,
             "auth_url": auth_url,
             "state": state,
             "redirect_uri": "https://resell-app-bi47.onrender.com/ebay/oauth/callback",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "token_duration": "permanent (2-year refresh token)"
         }
         
     except Exception as e:
@@ -1976,7 +2148,7 @@ async def ebay_oauth_callback_get(
         token_response = ebay_oauth.exchange_code_for_token(code, state=state)
         
         if token_response and token_response.get("success"):
-            logger.info("✅ Token obtained")
+            logger.info("✅ Token obtained with 2-year refresh token")
             
             token_id = token_response["token_id"]
             
@@ -1986,7 +2158,10 @@ async def ebay_oauth_callback_get(
                 store_ebay_token(access_token)
                 logger.info(f"✅ Token stored: {access_token[:20]}...")
             
-            redirect_url = f"ai-resell-pro://ebay-oauth-callback?success=true&token_id={token_id}&state={state}"
+            # Get token status to include expiry info
+            token_status = ebay_oauth.get_token_status(token_id)
+            
+            redirect_url = f"ai-resell-pro://ebay-oauth-callback?success=true&token_id={token_id}&state={state}&permanent={token_status.get('is_permanent', False)}"
             
             return HTMLResponse(content=f"""
                 <!DOCTYPE html>
@@ -2015,6 +2190,7 @@ async def ebay_oauth_callback_get(
                 <body>
                     <div class="container">
                         <h1>✅ Connected!</h1>
+                        <p>Long-term access granted (2 years)</p>
                         <p>Redirecting...</p>
                     </div>
                     <script>window.location.href = "{redirect_url}";</script>
@@ -2076,11 +2252,17 @@ async def get_ebay_token_endpoint(token_id: str):
         logger.info(f"✅ Token found and valid")
         refresh_ebay_token_if_needed(token_id)
         
+        # Get token status for expiry info
+        token_status = ebay_oauth.get_token_status(token_id)
+        
         return {
             "success": True,
             "access_token": token_data["access_token"],
-            "expires_at": token_data["expires_at"],
-            "token_type": token_data.get("token_type", "Bearer")
+            "expires_at": token_data.get("expires_at", ""),
+            "refresh_expires_at": token_data.get("refresh_expires_at", ""),
+            "token_type": token_data.get("token_type", "Bearer"),
+            "is_permanent": token_data.get("is_permanent", False),
+            "token_status": token_status
         }
         
     except Exception as e:
@@ -2089,15 +2271,15 @@ async def get_ebay_token_endpoint(token_id: str):
 
 @app.get("/ebay/oauth/status/{token_id}")
 async def get_token_status(token_id: str):
-    """Get status of a specific token"""
+    """Get status of a specific token including expiry times"""
     update_activity()
     
     logger.info(f"📋 Token status check for: {token_id}")
     
     try:
-        token_data = ebay_oauth.get_user_token(token_id)
+        token_status = ebay_oauth.get_token_status(token_id)
         
-        if not token_data:
+        if not token_status or token_status.get("valid") is None:
             logger.warning(f"⚠️ Token {token_id} not found in storage")
             # Check if we have any tokens at all
             available_tokens = list(ebay_oauth.tokens.keys())
@@ -2110,40 +2292,31 @@ async def get_token_status(token_id: str):
                 return {
                     "valid": True,
                     "expires_at": "Unknown (from env)",
+                    "refresh_expires_at": "Unknown",
                     "seconds_remaining": 3600,
+                    "refresh_seconds_remaining": 63072000,
                     "refreshable": False,
                     "message": "Token from environment",
-                    "source": "environment"
+                    "source": "environment",
+                    "is_permanent": False
                 }
             
             return {
                 "valid": False,
                 "error": f"Token {token_id} not found",
-                "available_tokens": available_tokens
+                "available_tokens": available_tokens,
+                "is_permanent": False
             }
         
-        # Check expiration
-        expires_at = datetime.fromisoformat(token_data["expires_at"])
-        time_remaining = expires_at - datetime.now()
-        seconds_remaining = time_remaining.total_seconds()
-        
-        valid = seconds_remaining > 300  # 5 minutes buffer
-        
-        return {
-            "valid": valid,
-            "expires_at": token_data["expires_at"],
-            "seconds_remaining": int(seconds_remaining),
-            "refreshable": "refresh_token" in token_data,
-            "message": "Valid token" if valid else "Token expiring soon",
-            "source": "oauth_storage"
-        }
+        return token_status
         
     except Exception as e:
         logger.error(f"❌ Token status error: {e}")
         return {
             "valid": False,
             "error": str(e),
-            "message": "Error checking token status"
+            "message": "Error checking token status",
+            "is_permanent": False
         }
 
 @app.delete("/ebay/oauth/token/{token_id}")
@@ -2210,17 +2383,18 @@ async def create_upload_file(
             }
         
         job_queue.put(job_id)
-        logger.info(f"📤 Job {job_id} queued (using ACTUAL sold items)")
+        logger.info(f"📤 Job {job_id} queued (using ACTUAL sold items with image coverage analysis)")
         
         return {
-            "message": "Analysis queued with ACTUAL eBay SOLD data",
+            "message": "Analysis queued with ACTUAL eBay SOLD data and image coverage analysis",
             "job_id": job_id,
             "status": "queued",
             "estimated_time": "25-30 seconds",
             "check_status_url": f"/job/{job_id}/status",
             "ebay_auth_status": "connected" if ebay_token else "required",
             "user_details_provided": bool(title or description),
-            "data_source": "eBay soldItems filter"
+            "data_source": "eBay soldItems filter",
+            "features": ["vehicle/part detection", "image coverage analysis", "guaranteed sold links"]
         }
             
     except HTTPException as he:
@@ -2270,6 +2444,13 @@ async def health_check():
     ebay_token = get_ebay_token()
     ebay_status = "✅ Connected" if ebay_token else "⚠️ Not connected"
     
+    # Check OpenCV availability
+    try:
+        cv2_version = cv2.__version__
+        opencv_status = f"✅ {cv2_version}"
+    except:
+        opencv_status = "❌ Not available"
+    
     return {
         "status": "✅ HEALTHY" if groq_client and ebay_token else "⚠️ PARTIAL",
         "timestamp": datetime.now().isoformat(),
@@ -2279,8 +2460,16 @@ async def health_check():
         "groq_status": groq_status,
         "ebay_status": ebay_status,
         "ebay_token_available": bool(ebay_token),
+        "opencv_status": opencv_status,
         "processing_mode": "MAXIMUM_ACCURACY_ACTUAL_SOLD_ONLY",
-        "search_filter": "soldItems:true"
+        "search_filter": "soldItems:true",
+        "features": [
+            "vehicle/part detection",
+            "image coverage analysis",
+            "long-term tokens (2 years)",
+            "auto-switch auth UI",
+            "guaranteed sold links"
+        ]
     }
 
 @app.get("/ping")
@@ -2289,9 +2478,10 @@ async def ping():
     return {
         "status": "✅ PONG",
         "timestamp": datetime.now().isoformat(),
-        "message": "Server awake with ACTUAL eBay SOLD data",
+        "message": "Server awake with ACTUAL eBay SOLD data and image analysis",
         "ebay_ready": bool(get_ebay_token()),
-        "search_method": "soldItems filter"
+        "search_method": "soldItems filter",
+        "version": "4.3.0"
     }
 
 @app.get("/")
@@ -2300,20 +2490,29 @@ async def root():
     ebay_token = get_ebay_token()
     
     return {
-        "message": "🎯 AI Resell Pro API - v4.2",
+        "message": "🎯 AI Resell Pro API - v4.3",
         "status": "🚀 OPERATIONAL" if groq_client and ebay_token else "⚠️ AUTH REQUIRED",
-        "version": "4.2.0",
+        "version": "4.3.0",
         "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required",
         "features": [
             "ACTUAL eBay SOLD item data only (soldItems filter)",
             "Guaranteed sold prices (not asking prices)",
+            "Image coverage analysis for vehicle/part detection",
+            "Long-term tokens (2-year refresh tokens)",
+            "Auto-switching auth UI when tokens expire",
+            "Guaranteed sold item links in responses",
             "Category-specific search patterns",
             "Card: [Name] [Set] [Number] [Year] [Features]",
-            "Vehicle: [Year] [Make] [Model]",
+            "Vehicle: [Year] [Make] [Model] with part detection",
             "Antique: [Era] [Item Type] [Material]",
             "No timezone complexity - eBay handles 'sold' status",
             "Single item filtering (not sets/lots)"
-        ]
+        ],
+        "image_analysis": {
+            "vehicle_part_detection": "Enabled",
+            "coverage_threshold": "70% for whole vehicles",
+            "opencv_available": "Yes" if 'cv2' in globals() else "No"
+        }
     }
 
 if __name__ == "__main__":
