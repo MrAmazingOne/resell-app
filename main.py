@@ -1,5 +1,3 @@
-[file name]: main.py
-[file content begin]
 # JOB QUEUE + POLLING SYSTEM - SOLD ITEMS ONLY
 # Enhanced with eBay Taxonomy API for category suggestions and Marketing API for keyword optimization
 # Now includes automatic category detection and keyword refinement
@@ -3461,4 +3459,3 @@ if __name__ == "__main__":
         timeout_keep_alive=30,
         log_level="info"
     )
-[file content end]
