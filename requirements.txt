@@ -9,6 +9,6 @@ aiohttp>=3.9.0
 python-multipart>=0.0.6
 async-timeout>=4.0.0
 gitpython>=3.1.40
-opencv-python-headless==4.9.0.80
+opencv-python-headless>=4.11.0
 numpy>=1.26.0
 setuptools>=70.0.0
