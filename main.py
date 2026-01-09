@@ -1,3 +1,5 @@
+[file name]: main.py
+[file content begin]
 # JOB QUEUE + POLLING SYSTEM - SOLD ITEMS ONLY
 # Enhanced with eBay Taxonomy API for category suggestions and Marketing API for keyword optimization
 # Now includes automatic category detection and keyword refinement
@@ -281,9 +283,9 @@ def get_default_category_tree_id() -> Optional[str]:
             'Content-Type': 'application/json'
         }
         
-        # First get the default category tree ID
+        # Updated to use correct Taxonomy API v1 (not v1_beta)
         response = requests.get(
-            'https://api.ebay.com/commerce/taxonomy/v1_beta/get_default_category_tree_id',
+            'https://api.ebay.com/commerce/taxonomy/v1/get_default_category_tree_id',
             headers=headers,
             params={'marketplace_id': 'EBAY_US'},
             timeout=10
@@ -295,7 +297,7 @@ def get_default_category_tree_id() -> Optional[str]:
             logger.info(f"📊 Default category tree ID: {category_tree_id}")
             return category_tree_id
         else:
-            logger.error(f"❌ Failed to get category tree ID: {response.status_code}")
+            logger.error(f"❌ Failed to get category tree ID: {response.status_code} - {response.text[:200]}")
             return None
             
     except Exception as e:
@@ -323,37 +325,35 @@ def get_category_suggestions(keywords: str, limit: int = 5) -> List[Dict]:
             'Content-Type': 'application/json'
         }
         
-        url = f'https://api.ebay.com/commerce/taxonomy/v1_beta/category_tree/{category_tree_id}/get_category_suggestions'
+        # Updated to use correct endpoint
+        url = f'https://api.ebay.com/commerce/taxonomy/v1/category_tree/{category_tree_id}/get_category_suggestions'
         
-        params = {
-            'q': keywords[:100],  # Limit query length
+        payload = {
+            'q': keywords[:100]  # Limit query length
         }
         
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            suggestions = data.get('categorySuggestions', [])
-            
-            # Sort by relevance (highest first)
-            suggestions.sort(key=lambda x: x.get('relevance', 0), reverse=True)
+            category_suggestions = data.get('categorySuggestions', [])
             
             # Format results
             formatted_suggestions = []
-            for suggestion in suggestions[:limit]:
+            for suggestion in category_suggestions[:limit]:
                 category = suggestion.get('category', {})
                 formatted_suggestions.append({
                     'category_id': category.get('categoryId'),
                     'category_name': category.get('categoryName'),
-                    'category_path': ' > '.join(category.get('categoryTreeNodeAncestors', [{}])[0].get('categoryName', '') for _ in category.get('categoryTreeNodeAncestors', [])),
-                    'relevance_score': suggestion.get('relevance', 0),
+                    'category_path': category.get('categoryTreeNodeAncestors', [{}])[0].get('categoryName', ''),
+                    'relevance_score': suggestion.get('confidence', 0),
                     'leaf_category': category.get('leafCategoryTreeNode', True)
                 })
             
             logger.info(f"📊 Category suggestions for '{keywords}': {len(formatted_suggestions)} found")
             return formatted_suggestions
         else:
-            logger.error(f"❌ Category suggestions failed: {response.status_code}")
+            logger.error(f"❌ Category suggestions failed: {response.status_code} - {response.text[:200]}")
             return []
             
     except Exception as e:
@@ -376,7 +376,7 @@ def get_category_hierarchy(category_id: str) -> Optional[Dict]:
             'Content-Type': 'application/json'
         }
         
-        url = f'https://api.ebay.com/commerce/taxonomy/v1_beta/category_tree/{category_tree_id}/get_category_subtree'
+        url = f'https://api.ebay.com/commerce/taxonomy/v1/category_tree/{category_tree_id}/get_category_subtree'
         
         params = {
             'category_id': category_id
@@ -404,8 +404,9 @@ def get_category_hierarchy(category_id: str) -> Optional[Dict]:
                 'hierarchy': ancestors,
                 'leaf_category': category_tree_node.get('leafCategoryTreeNode', True)
             }
-            
-        return None
+        else:
+            logger.warning(f"⚠️ Category hierarchy failed: {response.status_code}")
+            return None
         
     except Exception as e:
         logger.error(f"Category hierarchy error: {e}")
@@ -555,11 +556,12 @@ def analyze_with_taxonomy_and_keywords(item_title: str, item_description: str) -
     category_suggestions = get_category_suggestions(search_text, limit=5)
     
     if not category_suggestions:
-        logger.warning("⚠️ No category suggestions from Taxonomy API")
+        logger.warning("⚠️ No category suggestions from Taxonomy API - using fallback")
         return {
             'category_suggestions': [],
             'keyword_suggestions': [],
-            'confidence': 'low'
+            'confidence': 'low',
+            'taxonomy_api_available': False
         }
     
     # Step 2: Get keyword suggestions for top categories
@@ -585,7 +587,8 @@ def analyze_with_taxonomy_and_keywords(item_title: str, item_description: str) -
         'best_category': best_category,
         'validated_category': validated_category,
         'search_text_used': search_text,
-        'confidence': 'high' if len(category_suggestions) >= 2 else 'medium'
+        'confidence': 'high' if len(category_suggestions) >= 2 else 'medium',
+        'taxonomy_api_available': True
     }
     
     logger.info(f"✅ Taxonomy analysis complete. Best category: {best_category['category_name'] if best_category else 'Unknown'}")
@@ -785,7 +788,8 @@ def analyze_ebay_market_with_taxonomy(keywords: str, item_title: str = None, ite
             'success': False,
             'error': 'NO_SOLD_DATA',
             'message': 'No actual sold items found with taxonomy optimization',
-            'requires_auth': False
+            'requires_auth': False,
+            'taxonomy_api_available': False
         }
     
     # Step 2: Get taxonomy analysis for insights
@@ -810,7 +814,8 @@ def analyze_ebay_market_with_taxonomy(keywords: str, item_title: str = None, ite
             'success': False,
             'error': 'NO_VALID_PRICES',
             'message': 'Found sold items but no valid sale prices',
-            'requires_auth': False
+            'requires_auth': False,
+            'taxonomy_api_available': taxonomy_analysis.get('taxonomy_api_available', False)
         }
     
     # Step 5: Calculate REAL statistics from ACTUAL sales
@@ -858,7 +863,8 @@ def analyze_ebay_market_with_taxonomy(keywords: str, item_title: str = None, ite
         'has_sold_item_links': any(item.get('item_web_url') for item in relevant_items[:8]),
         'taxonomy_analysis': taxonomy_analysis,
         'optimization_method': 'Taxonomy API category validation + Keyword suggestions',
-        'filter_type': 'soldItems:true with optimized category filtering'
+        'filter_type': 'soldItems:true with optimized category filtering',
+        'taxonomy_api_available': taxonomy_analysis.get('taxonomy_api_available', False)
     }
     
     logger.info(f"✅ ENHANCED market data: {len(relevant_items)} actual sales, avg=${avg_price:.2f}, range=${min_price:.2f}-${max_price:.2f}")
@@ -3455,3 +3461,4 @@ if __name__ == "__main__":
         timeout_keep_alive=30,
         log_level="info"
     )
+[file content end]
