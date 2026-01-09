@@ -282,13 +282,21 @@ def detect_era(item_data: Dict) -> Optional[str]:
     
     return None
 
-# MAXIMUM ACCURACY MARKET ANALYSIS PROMPT - ENHANCED
+# MAXIMUM ACCURACY MARKET ANALYSIS PROMPT - ENHANCED FOR MULTI-ITEM
 market_analysis_prompt = """
 EXPERT RESELL ANALYST - MAXIMUM ACCURACY ANALYSIS:
 
-You are analyzing items for resale profitability. You MUST use ALL available information:
+**CRITICAL: If multiple distinct items are visible in the image, analyze EACH separately.**
+**Do NOT combine unrelated items into a single analysis. Return a JSON ARRAY of items.**
 
-🔍 **COMPREHENSIVE IDENTIFICATION PHASE:**
+🔍 **MULTI-ITEM ANALYSIS RULES:**
+1. Count ALL distinct items visible
+2. Analyze EACH item separately with its own value
+3. If items form a SET (like trading cards), analyze as a SET with combined value
+4. For unrelated items, create separate analyses
+5. If single item, return single-item array
+
+🔍 **COMPREHENSIVE IDENTIFICATION PHASE (PER ITEM):**
 - Extract EVERY visible text, number, logo, brand mark, model number, serial number
 - Identify ALL materials, construction quality, age indicators, manufacturing details
 - Note ALL condition issues, wear patterns, damage, repairs, modifications
@@ -315,37 +323,39 @@ You are analyzing items for resale profitability. You MUST use ALL available inf
 - Assess quality level (consumer, professional, luxury, handmade)
 - Provide guidance on what additional info would enable precise identification
 
-Return analysis in JSON format:
+Return analysis in JSON array format:
 
-{
-  "title": "eBay-optimized title with ALL available details",
-  "description": "COMPREHENSIVE description with ALL visible details, condition notes, and identification guidance",
-  "price_range": "Current market range: $X - $Y (based on available data)",
-  "resellability_rating": 8,
-  "suggested_cost": "Maximum to pay: $X (for profitable resale)",
-  "market_insights": "Detailed market demand, competition level, selling strategies",
-  "authenticity_checks": "SPECIFIC red flags and verification steps",
-  "profit_potential": "Expected profit: $X-Y after ALL fees",
-  "category": "Primary eBay category (based on analysis)",
-  "ebay_specific_tips": ["Photography tips", "Listing optimization", "Timing advice", "Keyword strategies"],
-  
-  "brand": "Exact brand if visible, otherwise 'Unknown - appears to be [quality/style]'",
-  "model": "Model number/name if visible, otherwise descriptive characteristics", 
-  "year": "Production year if determinable, otherwise era/style indicators",
-  "era": "Historical period if applicable (Victorian, Mid-Century, Art Deco, etc.)",
-  "condition": "DETAILED condition assessment with specific notes",
-  "confidence": 0.85,
-  "analysis_depth": "comprehensive",
-  "key_features": ["ALL notable features that add value"],
-  "comparable_items": "Similar items selling for $X-Y",
-  "identification_confidence": "high/medium/low with reasoning",
-  "additional_info_needed": ["What specific info would enable better identification"]
-}
+[
+  {
+    "title": "eBay-optimized title with ALL available details",
+    "description": "COMPREHENSIVE description with ALL visible details, condition notes, and identification guidance",
+    "price_range": "Current market range: $X - $Y (based on available data)",
+    "resellability_rating": 8,
+    "suggested_cost": "Maximum to pay: $X (for profitable resale)",
+    "market_insights": "Detailed market demand, competition level, selling strategies",
+    "authenticity_checks": "SPECIFIC red flags and verification steps",
+    "profit_potential": "Expected profit: $X-Y after ALL fees",
+    "category": "Primary eBay category (based on analysis)",
+    "ebay_specific_tips": ["Photography tips", "Listing optimization", "Timing advice", "Keyword strategies"],
+    
+    "brand": "Exact brand if visible, otherwise 'Unknown - appears to be [quality/style]'",
+    "model": "Model number/name if visible, otherwise descriptive characteristics", 
+    "year": "Production year if determinable, otherwise era/style indicators",
+    "era": "Historical period if applicable (Victorian, Mid-Century, Art Deco, etc.)",
+    "condition": "DETAILED condition assessment with specific notes",
+    "confidence": 0.85,
+    "analysis_depth": "comprehensive",
+    "key_features": ["ALL notable features that add value"],
+    "comparable_items": "Similar items selling for $X-Y",
+    "identification_confidence": "high/medium/low with reasoning",
+    "additional_info_needed": ["What specific info would enable better identification"]
+  }
+]
 
 CRITICAL: Base pricing on ACTUAL market conditions, NEVER guess.
 If specific identification is unclear, analyze by observable characteristics and provide guidance.
 
-IMPORTANT: Return ONLY valid JSON, no additional text or explanations.
+IMPORTANT: Return ONLY valid JSON array, no additional text or explanations.
 ALWAYS provide actionable insights, NEVER empty or generic responses.
 """
 
@@ -741,6 +751,11 @@ class EnhancedAppItem:
         self.identification_confidence = data.get("identification_confidence", "unknown")
         self.additional_info_needed = data.get("additional_info_needed", [])
         
+        # NEW: Sold comparison data
+        self.sold_statistics = data.get("sold_statistics", {})
+        self.comparison_items = data.get("comparison_items", [])
+        self.sold_items_links = data.get("sold_items_links", [])
+        
     def to_dict(self) -> Dict[str, Any]:
         return {
             "title": self.title,
@@ -763,7 +778,10 @@ class EnhancedAppItem:
             "key_features": self.key_features,
             "comparable_items": self.comparable_items,
             "identification_confidence": self.identification_confidence,
-            "additional_info_needed": self.additional_info_needed
+            "additional_info_needed": self.additional_info_needed,
+            "sold_statistics": self.sold_statistics,
+            "comparison_items": self.comparison_items,
+            "sold_items_links": self.sold_items_links
         }
 
 def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) -> str:
@@ -771,7 +789,7 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
     if not groq_client:
         raise Exception("Groq client not configured")
     
-    json_format_prompt = prompt + "\n\n**IMPORTANT: Return ONLY valid JSON. Do not include any explanatory text, code fences, or markdown outside the JSON.**"
+    json_format_prompt = prompt + "\n\n**IMPORTANT: Return ONLY valid JSON array. Do not include any explanatory text, code fences, or markdown outside the JSON.**"
     
     messages = []
     
@@ -823,8 +841,8 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         logger.error(f"Groq API call failed: {e}")
         raise Exception(f"Groq API error: {str(e)[:100]}")
 
-def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
-    """Direct eBay search using OAuth token - SMART filtering"""
+def search_ebay_directly(keywords: str, limit: int = 10) -> List[Dict]:
+    """Enhanced eBay search - FIXED to actually find sold items"""
     token = get_ebay_token()
     if not token:
         logger.error("❌ No eBay OAuth token available")
@@ -837,18 +855,18 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
             'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
-        # SMART FILTERING: Get SOLD items only
+        # FIXED: Better search parameters
         params = {
             'q': keywords,
-            'limit': str(limit * 10),  # Get more to filter
-            'filter': 'soldItems',  # Only sold items
+            'limit': str(limit * 3),  # Get more to filter
+            'filter': 'price:[1..10000],buyingOptions:{FIXED_PRICE|AUCTION}',  # Get items with buying options
             'sort': 'price',  # Sort by price
-            'fieldgroups': 'FULL'  # Get full item details
+            'fieldgroups': 'EXTENDED'
         }
         
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
         
-        logger.info(f"🔍 Direct eBay search for: '{keywords}'")
+        logger.info(f"🔍 Enhanced eBay search for: '{keywords}'")
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
         logger.info(f"   Status: {response.status_code}")
@@ -861,81 +879,54 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
                 items = []
                 for i, item in enumerate(data['itemSummaries']):
                     try:
-                        # Extract key information
+                        # Get item details
                         title = item.get('title', '').lower()
                         price = item.get('price', {}).get('value', '0')
                         price_float = float(price)
                         condition = item.get('condition', '')
-                        category_path = item.get('categoryPath', '')
+                        item_end_date = item.get('itemEndDate', '')
+                        buying_options = item.get('buyingOptions', [])
                         
-                        # 🚨 SMART FILTERING: Context-aware
-                        # 1. Check for ACTUAL parts listings (not collectibles)
-                        parts_keywords = ['for parts only', 'parts only', 'not working', 'as is',
-                                         'broken', 'damaged', 'cracked', 'shattered', 'broke']
+                        # Determine if sold (auction ended or has end date)
+                        is_sold = False
+                        if item_end_date:
+                            end_time = datetime.fromisoformat(item_end_date.replace('Z', '+00:00'))
+                            if end_time < datetime.now():
+                                is_sold = True
                         
-                        is_parts_listing = False
-                        for keyword in parts_keywords:
-                            if keyword in title:
-                                is_parts_listing = True
-                                break
+                        # Skip unrealistic prices for certain categories
+                        if 'pokemon' in keywords.lower() and price_float < 0.50:
+                            logger.debug(f"   [{i+1}] Skipping - unrealistic Pokemon card price: ${price_float}")
+                            continue
                         
-                        # 2. Skip suspiciously low prices for HIGH-VALUE items only
-                        is_realistic_price = True
+                        # Filter out junk
+                        parts_keywords = ['for parts only', 'parts only', 'not working', 'as is']
+                        is_parts = any(kw in title for kw in parts_keywords)
                         
-                        # Check if keywords suggest high-value item
-                        high_value_keywords = ['car', 'truck', 'vehicle', 'piano', 'rolex', 'diamond']
-                        is_potential_high_value = any(kw in keywords.lower() for kw in high_value_keywords)
-                        
-                        if is_potential_high_value and price_float < 100:
-                            logger.debug(f"   [{i+1}] Skipping - unrealistic price for high-value item: ${price_float}")
-                            is_realistic_price = False
-                        
-                        # 3. Check condition
-                        is_working_condition = True
-                        if condition and ('for parts' in condition.lower() or 'not working' in condition.lower()):
-                            logger.debug(f"   [{i+1}] Skipping - condition indicates parts: {condition}")
-                            is_working_condition = False
-                        
-                        # Only include items that pass filters
-                        if (not is_parts_listing and 
-                            is_realistic_price and 
-                            is_working_condition):
-                            
-                            logger.info(f"   ✅ [{i+1}] INCLUDED: '{title[:50]}...' - ${price_float}")
-                            
+                        if not is_parts and price_float > 0:
                             items.append({
                                 'title': item.get('title', ''),
                                 'price': price_float,
                                 'item_id': item.get('itemId', ''),
                                 'condition': condition,
-                                'category': category_path,
+                                'category': item.get('categoryPath', ''),
                                 'image_url': item.get('image', {}).get('imageUrl', ''),
-                                'item_web_url': item.get('itemWebUrl', '')
+                                'item_web_url': item.get('itemWebUrl', ''),
+                                'buying_options': buying_options,
+                                'sold': is_sold,
+                                'item_end_date': item_end_date
                             })
                             
                             if len(items) >= limit:
                                 break
                         else:
-                            logger.debug(f"   ❌ [{i+1}] FILTERED OUT: '{title[:50]}...' - ${price_float}")
+                            logger.debug(f"   [{i+1}] FILTERED OUT: '{title[:50]}...' - ${price_float}")
                                 
                     except (KeyError, ValueError) as e:
                         logger.debug(f"   [{i+1}] Skipping item - parsing error: {e}")
                         continue
                 
-                logger.info(f"✅ Found {len(items)} sold items")
-                
-                if len(items) == 0 and data.get('itemSummaries'):
-                    # Return at least one result for analysis
-                    first_item = data['itemSummaries'][0]
-                    items.append({
-                        'title': first_item.get('title', ''),
-                        'price': float(first_item.get('price', {}).get('value', '0')),
-                        'item_id': first_item.get('itemId', ''),
-                        'condition': first_item.get('condition', ''),
-                        'category': first_item.get('categoryPath', ''),
-                        'image_url': first_item.get('image', {}).get('imageUrl', '')
-                    })
-                
+                logger.info(f"✅ Found {len(items)} items")
                 return items
         elif response.status_code == 401:
             logger.error("❌ eBay token expired or invalid")
@@ -952,11 +943,104 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
     
     return []
 
+def search_ebay_completed_items(keywords: str, limit: int = 10) -> List[Dict]:
+    """Search for specifically completed/sold items"""
+    token = get_ebay_token()
+    if not token:
+        return []
+    
+    try:
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+        }
+        
+        # Try to find completed auctions
+        params = {
+            'q': keywords,
+            'limit': str(limit * 2),
+            'filter': 'buyingOptions:{AUCTION}',  # Auctions are more likely to be sold
+            'sort': 'endTime',  # Sort by end time
+            'fieldgroups': 'EXTENDED'
+        }
+        
+        url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            items = []
+            for item in data.get('itemSummaries', []):
+                try:
+                    item_end_date = item.get('itemEndDate', '')
+                    if item_end_date:
+                        end_time = datetime.fromisoformat(item_end_date.replace('Z', '+00:00'))
+                        if end_time < datetime.now():  # Item has ended
+                            price = float(item.get('price', {}).get('value', '0'))
+                            if price > 0:
+                                items.append({
+                                    'title': item.get('title', ''),
+                                    'price': price,
+                                    'item_id': item.get('itemId', ''),
+                                    'condition': item.get('condition', ''),
+                                    'item_web_url': item.get('itemWebUrl', ''),
+                                    'sold': True,
+                                    'item_end_date': item_end_date
+                                })
+                except:
+                    continue
+            
+            logger.info(f"🎯 Found {len(items)} completed items")
+            return items[:limit]
+    
+    except Exception as e:
+        logger.error(f"Completed items search error: {e}")
+    
+    return []
+
+def get_sold_comparison_items(keywords: str, limit: int = 5) -> List[Dict]:
+    """Get actual sold items for comparison"""
+    # Try multiple search strategies
+    items = []
+    
+    # Strategy 1: Look for completed auctions
+    items = search_ebay_completed_items(keywords, limit)
+    
+    # Strategy 2: Fallback to regular search
+    if len(items) < 3:
+        regular_items = search_ebay_directly(keywords, limit * 2)
+        # Filter for items that appear sold or have ended
+        for item in regular_items:
+            if item.get('sold') or 'AUCTION' in item.get('buying_options', []):
+                items.append(item)
+    
+    # Strategy 3: Try different keyword variations
+    if len(items) < 3:
+        # Try adding "sold" to search
+        items.extend(search_ebay_directly(f"{keywords} sold", limit))
+    
+    # Deduplicate
+    seen_ids = set()
+    unique_items = []
+    for item in items:
+        if item.get('item_id') not in seen_ids:
+            seen_ids.add(item.get('item_id'))
+            unique_items.append(item)
+    
+    return unique_items[:limit]
+
 def analyze_ebay_market_directly(keywords: str) -> Dict:
-    """Direct eBay market analysis"""
+    """Direct eBay market analysis with sold items"""
     logger.info(f"📊 Direct eBay market analysis for: '{keywords}'")
     
-    sold_items = search_ebay_directly(keywords, limit=15)
+    # Get sold comparison items
+    sold_items = get_sold_comparison_items(keywords, limit=15)
+    
+    if not sold_items:
+        logger.warning("⚠️ NO SOLD ITEMS FOUND - using current listings")
+        # Fallback to current listings
+        sold_items = search_ebay_directly(keywords, limit=10)
     
     if not sold_items:
         logger.error("❌ NO EBAY DATA AVAILABLE")
@@ -966,7 +1050,7 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
             'requires_auth': False
         }
     
-    prices = [item['price'] for item in sold_items]
+    prices = [item['price'] for item in sold_items if item.get('price', 0) > 0]
     
     if not prices:
         logger.error("❌ No valid price data from eBay")
@@ -985,15 +1069,18 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
         'success': True,
         'average_price': round(avg_price, 2),
         'price_range': f"${min_price:.2f} - ${max_price:.2f}",
+        'lowest_price': round(min_price, 2),
+        'highest_price': round(max_price, 2),
         'total_sold_analyzed': len(sold_items),
         'recommended_price': round(avg_price * 0.85, 2),
-        'market_notes': f'Based on {len(sold_items)} recent eBay sales',
+        'market_notes': f'Based on {len(sold_items)} recent eBay items',
         'data_source': 'eBay Browse API',
         'confidence': 'high' if len(sold_items) >= 5 else 'medium',
-        'api_used': 'Browse API'
+        'api_used': 'Browse API',
+        'sold_items': sold_items[:10]  # Include actual sold items
     }
     
-    logger.info(f"✅ Market analysis: avg=${avg_price:.2f}, range=${min_price:.2f}-${max_price:.2f}")
+    logger.info(f"✅ Market analysis: avg=${avg_price:.2f}, low=${min_price:.2f}, high=${max_price:.2f}")
     
     return analysis
 
@@ -1101,7 +1188,12 @@ def build_search_query(item_data: Dict, user_keywords: Dict, detected_category: 
 
 def ensure_string_field(item_data: Dict, field_name: str) -> Dict:
     """Ensure a field is always a string, converting if necessary"""
-    if field_name in item_data and item_data[field_name] is not None:
+    # Ensure field exists
+    if field_name not in item_data:
+        item_data[field_name] = ""
+        return item_data
+        
+    if item_data[field_name] is not None:
         try:
             value = item_data[field_name]
             if isinstance(value, (int, float)):
@@ -1166,6 +1258,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
         
         # Try to get REAL eBay market analysis
         market_analysis = None
+        sold_items = []
         
         for strategy in search_strategies:
             logger.info(f"🔍 Searching eBay with: '{strategy}'")
@@ -1173,6 +1266,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             
             if analysis and analysis.get('success'):
                 market_analysis = analysis
+                sold_items = analysis.get('sold_items', [])
                 break
             elif analysis and analysis.get('error') == 'NO_COMPLETE_ITEMS':
                 logger.error("❌ NO COMPLETE ITEMS FOUND - trying different search")
@@ -1240,6 +1334,39 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             item_data['identification_confidence'] = market_analysis['confidence']
             item_data['data_source'] = market_analysis['data_source']
             
+            # Add sold comparison items
+            if sold_items:
+                comparison_items = []
+                sold_items_links = []
+                prices = []
+                
+                for item in sold_items[:5]:  # Top 5 sold items
+                    comparison_items.append({
+                        'title': item.get('title', ''),
+                        'sold_price': item.get('price', 0),
+                        'condition': item.get('condition', ''),
+                        'item_url': item.get('item_web_url', ''),
+                        'image_url': item.get('image_url', ''),
+                        'sold': item.get('sold', False)
+                    })
+                    
+                    if item.get('item_web_url'):
+                        sold_items_links.append(item['item_web_url'])
+                    
+                    if item.get('price', 0) > 0:
+                        prices.append(item['price'])
+                
+                item_data['comparison_items'] = comparison_items
+                item_data['sold_items_links'] = sold_items_links
+                
+                if prices:
+                    item_data['sold_statistics'] = {
+                        'lowest_sold': min(prices),
+                        'highest_sold': max(prices),
+                        'average_sold': sum(prices) / len(prices),
+                        'total_comparisons': len(prices)
+                    }
+            
             # Check rare item database
             rare_match = check_rare_item_database(item_data)
             if rare_match:
@@ -1253,7 +1380,7 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 item_data['era'] = detected_era
                 item_data['market_insights'] += f" 🏛️ Era: {detected_era}"
             
-            logger.info(f"✅ eBay analysis complete")
+            logger.info(f"✅ eBay analysis complete with {len(sold_items)} sold items")
                     
         else:
             logger.error("❌ NO EBAY DATA")
@@ -1410,7 +1537,7 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 "message": "AI failed to analyze image"
             }
         
-        logger.info(f"✅ Complete: {len(enhanced_items)} items")
+        logger.info(f"✅ Complete: {len(enhanced_items)} items with sold comparisons")
         
         return {
             "status": "completed",
@@ -1423,7 +1550,8 @@ def process_image_maximum_accuracy(job_data: Dict) -> Dict:
                 "analysis_timestamp": datetime.now().isoformat(),
                 "model_used": groq_model,
                 "ebay_data_used": True,
-                "user_details_incorporated": bool(user_title or user_description)
+                "user_details_incorporated": bool(user_title or user_description),
+                "sold_items_included": any('comparison_items' in item for item in enhanced_items)
             }
         }
         
@@ -1536,7 +1664,7 @@ async def debug_ebay_search(keywords: str):
         params = {
             'q': keywords,
             'limit': '10',
-            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},soldItems'
+            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION}'
         }
         
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -1553,7 +1681,9 @@ async def debug_ebay_search(keywords: str):
                     'price': item.get('price', {}).get('value', 'No price'),
                     'condition': item.get('condition', 'No condition'),
                     'item_id': item.get('itemId', 'No ID'),
-                    'category': item.get('categoryPath', 'No category')
+                    'category': item.get('categoryPath', 'No category'),
+                    'buying_options': item.get('buyingOptions', []),
+                    'item_end_date': item.get('itemEndDate', '')
                 })
             
             return {
@@ -1857,7 +1987,7 @@ async def debug_ebay_raw(keywords: str):
         params = {
             'q': keywords,
             'limit': '20',
-            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},soldItems'
+            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION}'
         }
         
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -1879,7 +2009,9 @@ async def debug_ebay_raw(keywords: str):
                     'price': price,
                     'condition': condition,
                     'item_id': item.get('itemId', 'No ID'),
-                    'buying_options': item.get('buyingOptions', [])
+                    'buying_options': item.get('buyingOptions', []),
+                    'item_end_date': item.get('itemEndDate', ''),
+                    'item_web_url': item.get('itemWebUrl', '')
                 })
             
             return {
@@ -2044,7 +2176,8 @@ async def root():
             "Era detection (Victorian, Mid-Century, etc.)",
             "Rare item database (coins, stamps, cards)",
             "Proper search patterns (Year Brand Model)",
-            "Background removal ready (iOS lift feature)"
+            "Background removal ready (iOS lift feature)",
+            "Sold item comparisons with links"
         ]
     }
 
