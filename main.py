@@ -389,7 +389,7 @@ def clean_search_query(query: str) -> str:
 
 def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
     """
-    MAXIMUM accuracy category detection - EXPANDED WITH ALL CATEGORIES
+    IMPROVED CONTEXT-AWARE category detection
     """
     title_lower = title.lower()
     description_lower = description.lower()
@@ -400,256 +400,167 @@ def detect_category(title: str, description: str, vision_analysis: Dict) -> str:
     
     all_text = f"{title_lower} {description_lower} {detected_text.lower()} {detected_objects.lower()} {brands.lower()}"
     
-    # 🚨 PRIORITY 1: VEHICLES (check first)
-    vehicle_keywords = [
-        "truck", "car", "vehicle", "automobile", "auto", "pickup", "sedan", "suv", 
-        "van", "coupe", "convertible", "wagon", "jeep", "bus", "trailer", "rv",
-        "chevrolet", "chevy", "ford", "toyota", "honda", "dodge", "gmc", "ram",
-        "motorcycle", "bike", "scooter", "atv", "utv", "snowmobile", "boat"
+    # 🚨 CRITICAL FIX: Use CONTEXT-AWARE detection, not just keyword matching
+    # First, check for OBVIOUS MISCLASSIFICATIONS
+    
+    # Is this a COLLECTIBLE CARD (not a vehicle)?
+    # Look for strong card-related terms
+    card_indicators = [
+        ("pokemon card", 10), ("trading card", 10), ("baseball card", 10),
+        ("football card", 10), ("basketball card", 10), ("hockey card", 10),
+        ("magic card", 10), ("yu-gi-oh", 10), ("tcg", 8),
+        ("first edition", 8), ("graded", 8), ("psa", 8), ("bgs", 8),
+        ("holo", 6), ("holographic", 6), ("collectible card", 8)
     ]
     
-    for keyword in vehicle_keywords:
+    for keyword, score in card_indicators:
         if keyword in all_text:
-            logger.info(f"🚗 VEHICLE DETECTED: Found '{keyword}' in text")
-            return "vehicles"
+            logger.info(f"🃏 STRONG CARD INDICATOR: '{keyword}' (score: {score})")
+            return "collectibles"
     
-    # Check for year + automotive brand
-    automotive_brands = ["chevrolet", "chevy", "ford", "toyota", "honda", "dodge", "gmc", "ram", "jeep"]
-    year_pattern = r'\b(19[5-9]\d|20[0-2]\d)\b'
+    # Is this a TOY/PLUSH (not a vehicle)?
+    toy_indicators = [
+        ("care bear", 10), ("teddy bear", 10), ("stuffed animal", 10),
+        ("plush", 8), ("toy", 6), ("action figure", 8), ("doll", 8),
+        ("lego", 10), ("playset", 6), ("model kit", 6)
+    ]
     
-    if re.search(year_pattern, all_text):
-        for brand in automotive_brands:
-            if brand in all_text:
-                logger.info(f"🚗 VEHICLE DETECTED: Found year + '{brand}' brand")
-                return "vehicles"
+    for keyword, score in toy_indicators:
+        if keyword in all_text:
+            logger.info(f"🧸 STRONG TOY INDICATOR: '{keyword}' (score: {score})")
+            return "toys"
     
-    # 🚨 PRIORITY 2: Specific categories with strong keywords
+    # 🚨 SMART VEHICLE DETECTION: Only detect vehicles with STRONG evidence
+    vehicle_indicators = [
+        ("truck", 8), ("pickup", 8), ("sedan", 8), ("suv", 8), ("van", 8),
+        ("motorcycle", 8), ("boat", 8), ("trailer", 8), ("rv", 8),
+        ("automobile", 8), ("vehicle", 6), ("car", 5)  # "car" has lower score
+    ]
+    
+    vehicle_score = 0
+    for keyword, score in vehicle_indicators:
+        if keyword in all_text:
+            # Check context - is "car" in a product name or actual vehicle?
+            if keyword == "car":
+                # "car" in product names like "Care Bear" or "Pokemon Scarlet Violet" should NOT count
+                if "care bear" in all_text or "pokemon" in all_text or "trading card" in all_text:
+                    logger.info(f"🚫 Ignoring 'car' in product name: {all_text[:50]}...")
+                    continue
+            
+            vehicle_score += score
+            logger.info(f"🚗 Vehicle indicator: '{keyword}' (+{score})")
+    
+    # Also check for year + automotive brand combination (strong vehicle signal)
+    year_pattern = r'\b(19[0-9]\d|20[0-2]\d)\b'
+    years = re.findall(year_pattern, all_text)
+    
+    automotive_brands = ["chevrolet", "chevy", "ford", "toyota", "honda", "bmw", "mercedes", "dodge"]
+    has_auto_brand = any(brand in all_text for brand in automotive_brands)
+    
+    if years and has_auto_brand:
+        vehicle_score += 15
+        logger.info(f"🚗 STRONG VEHICLE SIGNAL: Year {years[0]} + automotive brand")
+    
+    # Only classify as vehicle if we have strong evidence
+    if vehicle_score >= 10:
+        logger.info(f"📦 VEHICLE DETECTED (score: {vehicle_score})")
+        return "vehicles"
+    
+    # Score each category based on comprehensive keyword matching
     category_keywords = {
-        # Musical Instruments (HIGHEST PRIORITY after vehicles)
+        # Musical Instruments
         "music": [
-            "piano", "grand piano", "upright piano", "keyboard", "synthesizer", "petrof",
-            "steinway", "yamaha piano", "baldwin", "kawai", "bosendorfer",
-            "guitar", "acoustic guitar", "electric guitar", "bass guitar", "fender", "gibson",
-            "martin guitar", "taylor guitar", "prs", "ibanez", "jackson",
-            "violin", "viola", "cello", "double bass", "fiddle", "stradivarius",
-            "drums", "drum set", "drum kit", "cymbal", "snare", "bass drum", "ludwig", "pearl drums",
-            "trumpet", "trombone", "tuba", "french horn", "saxophone", "sax",
-            "clarinet", "flute", "oboe", "bassoon", "harmonica",
-            "accordion", "banjo", "mandolin", "ukulele", "harp",
-            "organ", "hammond organ", "harpsichord", "mellotron", "theremin"
+            "piano", "guitar", "violin", "trumpet", "saxophone", "drums", 
+            "keyboard", "synthesizer", "amplifier", "microphone"
         ],
         
         # Collectible Cards & Games
         "collectibles": [
-            "pokemon card", "pokémon", "pokémon card", "pikachu", "charizard", "mewtwo",
-            "trading card", "tcg", "ccg", "magic the gathering", "mtg", "magic card",
-            "yu-gi-oh", "yugioh", "yu gi oh card",
-            "baseball card", "sports card", "football card", "basketball card",
-            "hockey card", "soccer card", "topps", "upper deck", "panini", "fleer",
-            "holographic", "holo", "first edition", "shadowless", "graded", "psa", "bgs", "cgc",
-            "collectible", "rare card", "vintage card", "limited edition card",
-            "signed card", "autograph card", "memorabilia card", "rookie card", "insert card"
-        ],
-        
-        # Coins & Currency
-        "coins": [
-            "coin", "penny", "cent", "nickel", "dime", "quarter", "half dollar", "dollar coin",
-            "silver dollar", "gold coin", "morgan dollar", "peace dollar", "buffalo nickel",
-            "indian head", "wheat penny", "lincoln cent", "error coin", "double die", "mint mark",
-            "proof coin", "uncirculated", "numismatic", "currency", "paper money",
-            "bill", "note", "silver certificate", "federal reserve note", "gold certificate",
-            "commemorative coin", "bullion", "krugerrand", "eagle coin", "maple leaf coin"
-        ],
-        
-        # Stamps
-        "stamps": [
-            "stamp", "postage stamp", "philatelic", "first day cover", "mint stamp",
-            "unused stamp", "canceled stamp", "cancelled stamp", "rare stamp", "block of stamps",
-            "stamp collection", "commemorative stamp", "airmail stamp", "definitive stamp"
+            "pokemon", "pokémon", "magic", "yugioh", "baseball card", "sports card",
+            "trading card", "tcg", "ccg", "collectible", "rare card", "vintage card"
         ],
         
         # Electronics
         "electronics": [
-            "electronic", "computer", "pc", "laptop", "notebook", "macbook",
-            "phone", "smartphone", "mobile", "iphone", "samsung phone", "android phone",
-            "tablet", "ipad", "kindle", "e-reader",
-            "camera", "dslr", "mirrorless", "canon camera", "nikon camera", "sony camera",
-            "lens", "camera lens", "zoom lens", "prime lens",
-            "headphones", "earbuds", "earphones", "airpods", "beats", "bose headphones",
-            "speaker", "bluetooth speaker", "smart speaker", "alexa", "google home",
-            "smartwatch", "apple watch", "fitbit", "garmin watch",
-            "gaming console", "playstation", "ps5", "ps4", "xbox", "nintendo switch",
-            "monitor", "display", "screen", "tv", "television",
-            "keyboard", "mechanical keyboard", "mouse", "gaming mouse",
-            "router", "modem", "wifi", "network", "drone", "quadcopter"
+            "iphone", "samsung", "laptop", "computer", "camera", "headphones",
+            "speaker", "smartphone", "tablet", "gaming console", "playstation"
         ],
         
         # Clothing & Shoes
         "clothing": [
-            "shirt", "t-shirt", "tee", "polo", "button up", "dress shirt",
-            "pants", "jeans", "denim", "trousers", "chinos", "slacks",
-            "dress", "gown", "sundress", "maxi dress", "cocktail dress",
-            "jacket", "coat", "blazer", "suit jacket", "sport coat",
-            "sweater", "cardigan", "pullover", "hoodie", "sweatshirt",
-            "shorts", "skirt", "leggings", "joggers", "tracksuit",
-            "shoe", "shoes", "sneaker", "sneakers", "trainers", "kicks",
-            "boot", "boots", "ankle boot", "chelsea boot", "work boot",
-            "sandal", "flip flop", "slide", "heel", "pump", "stiletto",
-            "loafer", "oxford", "derby", "monk strap",
-            "nike", "adidas", "jordan", "air jordan", "yeezy", "boost",
-            "supreme", "bape", "off-white", "gucci", "prada", "louis vuitton",
-            "balenciaga", "versace", "armani", "ralph lauren", "tommy hilfiger",
-            "vintage clothing", "retro clothing", "streetwear", "designer"
+            "shirt", "pants", "jeans", "dress", "jacket", "coat", "shoe",
+            "sneaker", "boot", "hoodie", "sweater", "t-shirt"
         ],
         
         # Furniture
         "furniture": [
-            "chair", "armchair", "dining chair", "office chair", "rocking chair",
-            "table", "dining table", "coffee table", "end table", "side table",
-            "desk", "writing desk", "computer desk", "secretary desk",
-            "cabinet", "china cabinet", "curio cabinet", "storage cabinet",
-            "sofa", "couch", "loveseat", "sectional", "settee", "chaise",
-            "bed", "bed frame", "headboard", "footboard", "canopy bed",
-            "dresser", "chest of drawers", "bureau", "vanity",
-            "nightstand", "bedside table", "bookshelf", "bookcase", "shelving",
-            "wardrobe", "armoire", "closet", "credenza", "buffet", "hutch",
-            "ottoman", "footstool", "bench", "stool", "bar stool",
-            "recliner", "lounge chair", "accent chair",
-            "antique furniture", "vintage furniture", "mid century", "victorian",
-            "art deco", "colonial", "chippendale", "queen anne"
+            "chair", "table", "sofa", "couch", "desk", "bed", "dresser",
+            "cabinet", "bookshelf", "wardrobe", "armoire"
         ],
         
         # Jewelry & Watches
         "jewelry": [
-            "ring", "engagement ring", "wedding ring", "band", "signet ring",
-            "necklace", "pendant", "chain", "choker", "locket",
-            "bracelet", "bangle", "cuff", "tennis bracelet", "charm bracelet",
-            "earring", "earrings", "stud", "hoop", "drop earring", "dangle",
-            "brooch", "pin", "lapel pin",
-            "watch", "wristwatch", "timepiece", "wrist watch",
-            "rolex", "omega watch", "cartier", "patek philippe", "audemars piguet",
-            "tag heuer", "breitling", "iwc", "panerai", "jaeger lecoultre",
-            "diamond", "gold", "silver", "platinum", "white gold", "rose gold",
-            "gemstone", "ruby", "sapphire", "emerald", "pearl", "opal",
-            "tiffany", "bulgari", "chopard", "van cleef", "harry winston",
-            "vintage jewelry", "antique jewelry", "estate jewelry"
+            "ring", "necklace", "bracelet", "earring", "watch", "rolex",
+            "diamond", "gold", "silver", "platinum", "gemstone"
         ],
         
         # Books
         "books": [
-            "book", "novel", "hardcover", "paperback", "softcover",
-            "textbook", "reference book", "manual", "guide",
-            "comic book", "comic", "manga", "graphic novel",
-            "first edition", "signed book", "autographed book", "rare book",
-            "cookbook", "recipe book", "biography", "autobiography", "memoir",
-            "fiction", "non-fiction", "nonfiction", "self-help",
-            "children's book", "picture book", "young adult"
+            "book", "novel", "hardcover", "paperback", "textbook", "comic book",
+            "manga", "graphic novel", "first edition", "signed book"
         ],
         
         # Toys & Action Figures
         "toys": [
-            "toy", "action figure", "figurine", "collectible figure",
-            "doll", "barbie", "american girl", "baby doll",
-            "hot wheels", "matchbox", "die cast", "model car",
-            "lego", "building blocks", "construction toy",
-            "playset", "play set", "toy set",
-            "stuffed animal", "plush", "teddy bear", "plushie",
-            "board game", "card game", "puzzle", "jigsaw puzzle",
-            "transformers", "gi joe", "star wars", "marvel", "dc comics",
-            "funko pop", "funko", "nendoroid", "figma",
-            "vintage toy", "retro toy", "antique toy", "tin toy"
+            "toy", "action figure", "doll", "lego", "stuffed animal", "plush",
+            "model car", "hot wheels", "board game", "puzzle"
         ],
         
         # Sports Equipment
         "sports": [
-            "baseball", "baseball bat", "baseball glove", "mitt",
-            "football", "basketball", "soccer ball", "volleyball",
-            "golf", "golf club", "driver", "putter", "iron", "wedge",
-            "tennis", "tennis racket", "badminton",
-            "hockey", "hockey stick", "skates", "ice skates", "roller skates",
-            "fishing", "fishing rod", "reel", "tackle",
-            "bicycle", "bike", "mountain bike", "road bike", "bmx",
-            "skateboard", "longboard", "snowboard", "skis", "ski",
-            "exercise equipment", "weights", "dumbbell", "barbell", "kettlebell",
-            "treadmill", "elliptical", "stationary bike", "rowing machine",
-            "yoga mat", "fitness mat", "gym equipment",
-            "jersey", "sports jersey", "signed jersey", "autographed",
-            "sports memorabilia", "game used", "game worn"
+            "baseball", "football", "basketball", "golf", "tennis", "hockey",
+            "fishing", "bicycle", "skateboard", "exercise equipment"
         ],
         
         # Tools & Hardware
         "tools": [
-            "tool", "hand tool", "power tool",
-            "wrench", "socket", "ratchet", "spanner",
-            "hammer", "mallet", "sledgehammer",
-            "screwdriver", "phillips", "flathead",
-            "drill", "drill bit", "impact driver", "hammer drill",
-            "saw", "circular saw", "miter saw", "table saw", "jigsaw", "reciprocating saw",
-            "sander", "belt sander", "orbital sander",
-            "pliers", "wire cutters", "needle nose",
-            "level", "tape measure", "ruler", "square",
-            "craftsman", "dewalt", "milwaukee", "makita", "bosch", "ryobi",
-            "black and decker", "porter cable", "ridgid", "kobalt",
-            "toolbox", "tool chest", "tool cabinet"
+            "tool", "wrench", "hammer", "screwdriver", "drill", "saw",
+            "pliers", "toolbox", "power tool", "hand tool"
         ],
         
         # Art & Decor
         "art": [
-            "painting", "oil painting", "acrylic painting", "watercolor",
-            "print", "art print", "poster", "lithograph", "serigraph",
-            "etching", "engraving", "woodcut", "linocut",
-            "sculpture", "statue", "figurine", "bronze sculpture",
-            "drawing", "sketch", "charcoal drawing", "pastel",
-            "photograph", "photography", "fine art photography",
-            "canvas", "stretched canvas", "canvas print",
-            "frame", "picture frame", "art frame",
-            "original art", "signed art", "numbered print", "limited edition",
-            "abstract art", "modern art", "contemporary art", "impressionist"
+            "painting", "print", "sculpture", "drawing", "photograph",
+            "canvas", "art", "original art", "signed art"
         ],
         
         # Kitchen & Appliances
         "kitchen": [
-            "kitchen", "kitchenware", "cookware", "bakeware",
-            "pan", "frying pan", "skillet", "sauté pan",
-            "pot", "stock pot", "sauce pan", "dutch oven",
-            "knife", "chef knife", "paring knife", "bread knife", "knife set",
-            "cutlery", "silverware", "flatware", "utensil",
-            "plate", "dish", "platter", "serving dish",
-            "bowl", "mixing bowl", "salad bowl", "serving bowl",
-            "cup", "mug", "coffee mug", "tea cup",
-            "glass", "wine glass", "champagne flute", "tumbler",
-            "blender", "food processor", "mixer", "stand mixer", "hand mixer",
-            "toaster", "toaster oven", "coffee maker", "espresso machine",
-            "slow cooker", "crock pot", "instant pot", "pressure cooker",
-            "kitchenaid", "cuisinart", "ninja", "breville", "vitamix",
-            "le creuset", "lodge", "all clad", "calphalon"
+            "kitchen", "pan", "pot", "knife", "cutlery", "blender",
+            "mixer", "toaster", "coffee maker", "microwave"
         ]
     }
     
-    # Score each category
     scores = {category: 0 for category in category_keywords}
     scores["unknown"] = 0
     
     for category, keywords in category_keywords.items():
         for keyword in keywords:
             if keyword in all_text:
-                # Give higher weight to exact matches and multi-word phrases
-                if keyword == all_text.strip():
-                    scores[category] += 10
-                elif f" {keyword} " in f" {all_text} ":
-                    scores[category] += 3
-                else:
-                    scores[category] += 1
+                # Weight by how definitive the keyword is
+                weight = 3 if len(keyword) > 5 else 1  # Longer words are more specific
+                scores[category] += weight
     
     # Get highest scoring category
     detected_category = max(scores.items(), key=lambda x: x[1])[0]
+    highest_score = scores[detected_category]
     
-    # Only accept if score is above threshold
-    if scores[detected_category] >= 2:
-        logger.info(f"📦 CATEGORY: '{detected_category}' (score: {scores[detected_category]})")
+    # Only accept if score is above reasonable threshold
+    if highest_score >= 3:
+        logger.info(f"📦 CATEGORY: '{detected_category}' (score: {highest_score})")
         return detected_category
     else:
-        logger.info(f"📦 CATEGORY: 'unknown' (highest score: {scores[detected_category]})")
+        logger.info(f"📦 CATEGORY: 'unknown' (highest score: {highest_score})")
         return "unknown"
 
 def extract_keywords_from_user_input(user_text: str) -> Dict[str, List[str]]:
@@ -913,7 +824,7 @@ def call_groq_api(prompt: str, image_base64: str = None, mime_type: str = None) 
         raise Exception(f"Groq API error: {str(e)[:100]}")
 
 def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
-    """Direct eBay search using OAuth token - ONLY COMPLETE SOLD ITEMS, NO PARTS"""
+    """Direct eBay search using OAuth token - SMART filtering"""
     token = get_ebay_token()
     if not token:
         logger.error("❌ No eBay OAuth token available")
@@ -926,18 +837,18 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
             'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
-        # 🚨 CRITICAL FILTERING: Get SOLD items only, filter out parts/incomplete items
+        # SMART FILTERING: Get SOLD items only
         params = {
             'q': keywords,
-            'limit': str(limit * 10),  # Get more to filter aggressively
+            'limit': str(limit * 10),  # Get more to filter
             'filter': 'soldItems',  # Only sold items
-            'sort': 'price',  # Sort by price to identify realistic ranges
+            'sort': 'price',  # Sort by price
             'fieldgroups': 'FULL'  # Get full item details
         }
         
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
         
-        logger.info(f"🔍 Direct eBay search for: '{keywords}' (filtering for COMPLETE items only)")
+        logger.info(f"🔍 Direct eBay search for: '{keywords}'")
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
         logger.info(f"   Status: {response.status_code}")
@@ -957,45 +868,39 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
                         condition = item.get('condition', '')
                         category_path = item.get('categoryPath', '')
                         
-                        # 🚨 AGGRESSIVE FILTERING FOR COMPLETE ITEMS ONLY
-                        # 1. Skip parts listings
-                        parts_keywords = ['part', 'parts', 'replacement', 'spare', 'broken', 'damaged', 
-                                         'cracked', 'for repair', 'for parts', 'not working', 'as is',
-                                         'incomplete', 'missing', 'broke', 'shattered']
+                        # 🚨 SMART FILTERING: Context-aware
+                        # 1. Check for ACTUAL parts listings (not collectibles)
+                        parts_keywords = ['for parts only', 'parts only', 'not working', 'as is',
+                                         'broken', 'damaged', 'cracked', 'shattered', 'broke']
                         
-                        is_parts_listing = any(keyword in title for keyword in parts_keywords)
+                        is_parts_listing = False
+                        for keyword in parts_keywords:
+                            if keyword in title:
+                                is_parts_listing = True
+                                break
                         
-                        # 2. Skip suspiciously low prices (likely parts or incomplete)
-                        # For vehicles, minimum realistic price is $500
-                        # For other categories, minimum $10
+                        # 2. Skip suspiciously low prices for HIGH-VALUE items only
                         is_realistic_price = True
-                        if 'vehicle' in keywords.lower() or 'truck' in keywords.lower() or 'car' in keywords.lower():
-                            if price_float < 500:
-                                logger.debug(f"   [{i+1}] Skipping - unrealistic price for vehicle: ${price_float}")
-                                is_realistic_price = False
-                        elif price_float < 10:
-                            logger.debug(f"   [{i+1}] Skipping - suspiciously low price: ${price_float}")
+                        
+                        # Check if keywords suggest high-value item
+                        high_value_keywords = ['car', 'truck', 'vehicle', 'piano', 'rolex', 'diamond']
+                        is_potential_high_value = any(kw in keywords.lower() for kw in high_value_keywords)
+                        
+                        if is_potential_high_value and price_float < 100:
+                            logger.debug(f"   [{i+1}] Skipping - unrealistic price for high-value item: ${price_float}")
                             is_realistic_price = False
                         
-                        # 3. Check for "for parts/not working" in condition
+                        # 3. Check condition
                         is_working_condition = True
                         if condition and ('for parts' in condition.lower() or 'not working' in condition.lower()):
                             logger.debug(f"   [{i+1}] Skipping - condition indicates parts: {condition}")
                             is_working_condition = False
                         
-                        # 4. Check category - skip "Parts & Accessories" categories
-                        is_not_parts_category = True
-                        if category_path and ('parts' in category_path.lower() or 'accessories' in category_path.lower()):
-                            logger.debug(f"   [{i+1}] Skipping - parts category: {category_path}")
-                            is_not_parts_category = False
-                        
-                        # Only include items that pass ALL filters
+                        # Only include items that pass filters
                         if (not is_parts_listing and 
                             is_realistic_price and 
-                            is_working_condition and 
-                            is_not_parts_category):
+                            is_working_condition):
                             
-                            # Debug logging
                             logger.info(f"   ✅ [{i+1}] INCLUDED: '{title[:50]}...' - ${price_float}")
                             
                             items.append({
@@ -1011,31 +916,25 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
                             if len(items) >= limit:
                                 break
                         else:
-                            # Log why item was filtered out
                             logger.debug(f"   ❌ [{i+1}] FILTERED OUT: '{title[:50]}...' - ${price_float}")
-                            if is_parts_listing:
-                                logger.debug(f"      Reason: Contains parts keywords")
-                            if not is_realistic_price:
-                                logger.debug(f"      Reason: Price ${price_float} too low for category")
-                            if not is_working_condition:
-                                logger.debug(f"      Reason: Condition: {condition}")
-                            if not is_not_parts_category:
-                                logger.debug(f"      Reason: Category: {category_path}")
                                 
                     except (KeyError, ValueError) as e:
                         logger.debug(f"   [{i+1}] Skipping item - parsing error: {e}")
                         continue
                 
-                logger.info(f"✅ Found {len(items)} COMPLETE sold items (aggressively filtered from {len(data.get('itemSummaries', []))} results)")
+                logger.info(f"✅ Found {len(items)} sold items")
                 
-                if len(items) == 0:
-                    logger.warning(f"⚠️ No complete items found after filtering. Try a more specific search.")
-                    # Try one more time with less strict filtering for debug
-                    logger.info(f"   First 5 unfiltered results:")
-                    for i, item in enumerate(data['itemSummaries'][:5]):
-                        title = item.get('title', '')[:60]
-                        price = item.get('price', {}).get('value', '0')
-                        logger.info(f"      {i+1}. ${price} - {title}...")
+                if len(items) == 0 and data.get('itemSummaries'):
+                    # Return at least one result for analysis
+                    first_item = data['itemSummaries'][0]
+                    items.append({
+                        'title': first_item.get('title', ''),
+                        'price': float(first_item.get('price', {}).get('value', '0')),
+                        'item_id': first_item.get('itemId', ''),
+                        'condition': first_item.get('condition', ''),
+                        'category': first_item.get('categoryPath', ''),
+                        'image_url': first_item.get('image', {}).get('imageUrl', '')
+                    })
                 
                 return items
         elif response.status_code == 401:
@@ -1054,18 +953,17 @@ def search_ebay_directly(keywords: str, limit: int = 5) -> List[Dict]:
     return []
 
 def analyze_ebay_market_directly(keywords: str) -> Dict:
-    """Direct eBay market analysis - ONLY COMPLETE SOLD ITEMS"""
+    """Direct eBay market analysis"""
     logger.info(f"📊 Direct eBay market analysis for: '{keywords}'")
     
-    sold_items = search_ebay_directly(keywords, limit=15)  # Get more for better analysis
+    sold_items = search_ebay_directly(keywords, limit=15)
     
     if not sold_items:
-        logger.error("❌ NO COMPLETE EBAY DATA AVAILABLE - all items filtered out as parts/incomplete")
+        logger.error("❌ NO EBAY DATA AVAILABLE")
         return {
-            'error': 'NO_COMPLETE_ITEMS',
-            'message': 'eBay returned only parts/incomplete items. No complete items found for analysis.',
-            'requires_auth': False,
-            'filtered_out_parts': True
+            'error': 'NO_EBAY_DATA',
+            'message': 'Unable to retrieve eBay data for this search',
+            'requires_auth': False
         }
     
     prices = [item['price'] for item in sold_items]
@@ -1082,30 +980,17 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
     avg_price = sum(prices) / len(prices)
     min_price = min(prices)
     max_price = max(prices)
-    median_price = sorted(prices)[len(prices) // 2]
-    
-    # Remove extreme outliers (prices more than 5x the median)
-    filtered_prices = [p for p in prices if p <= median_price * 5 and p >= median_price / 5]
-    
-    if filtered_prices:
-        avg_price = sum(filtered_prices) / len(filtered_prices)
-        min_price = min(filtered_prices)
-        max_price = max(filtered_prices)
-        median_price = sorted(filtered_prices)[len(filtered_prices) // 2]
     
     analysis = {
         'success': True,
         'average_price': round(avg_price, 2),
-        'median_price': round(median_price, 2),
         'price_range': f"${min_price:.2f} - ${max_price:.2f}",
         'total_sold_analyzed': len(sold_items),
-        'total_filtered': len(sold_items),
-        'recommended_price': round(median_price * 0.85, 2),
-        'market_notes': f'Based on {len(sold_items)} recent COMPLETE eBay sales (parts/incomplete items filtered out)',
-        'data_source': 'eBay Browse API - Complete Sold Items Only',
+        'recommended_price': round(avg_price * 0.85, 2),
+        'market_notes': f'Based on {len(sold_items)} recent eBay sales',
+        'data_source': 'eBay Browse API',
         'confidence': 'high' if len(sold_items) >= 5 else 'medium',
-        'api_used': 'Browse API',
-        'filtering_applied': 'Aggressive parts/incomplete filtering'
+        'api_used': 'Browse API'
     }
     
     logger.info(f"✅ Market analysis: avg=${avg_price:.2f}, range=${min_price:.2f}-${max_price:.2f}")
@@ -1115,14 +1000,6 @@ def analyze_ebay_market_directly(keywords: str) -> Dict:
 def build_search_query(item_data: Dict, user_keywords: Dict, detected_category: str) -> List[str]:
     """
     Build search queries following REAL user search patterns
-    
-    Examples:
-    - 1955 Chevrolet 5 Window
-    - 1980s Vintage Rolex Submariner
-    - Nike Air Jordan 6 Retro
-    - Antique Victorian Mahogany Chair
-    - Vintage Playstation 1
-    - Ninetales Delta Species Pokemon Card
     """
     search_strategies = []
     
@@ -1225,11 +1102,23 @@ def build_search_query(item_data: Dict, user_keywords: Dict, detected_category: 
 def ensure_string_field(item_data: Dict, field_name: str) -> Dict:
     """Ensure a field is always a string, converting if necessary"""
     if field_name in item_data and item_data[field_name] is not None:
-        value = item_data[field_name]
-        if isinstance(value, (int, float)):
-            item_data[field_name] = str(int(value))
-        elif not isinstance(value, str):
-            item_data[field_name] = str(value)
+        try:
+            value = item_data[field_name]
+            if isinstance(value, (int, float)):
+                item_data[field_name] = str(int(value))
+            elif isinstance(value, bool):
+                item_data[field_name] = str(value).lower()
+            elif isinstance(value, list):
+                # Join list with commas
+                item_data[field_name] = ", ".join(str(v) for v in value)
+            elif not isinstance(value, str):
+                item_data[field_name] = str(value)
+            # If it's already a string, ensure it's stripped
+            elif isinstance(value, str):
+                item_data[field_name] = value.strip()
+        except Exception as e:
+            logger.warning(f"Failed to convert field {field_name}: {e}")
+            item_data[field_name] = ""
     return item_data
 
 def ensure_numeric_fields(item_data: Dict) -> Dict:
@@ -1286,13 +1175,8 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
                 market_analysis = analysis
                 break
             elif analysis and analysis.get('error') == 'NO_COMPLETE_ITEMS':
-                logger.error("❌ NO COMPLETE ITEMS FOUND - eBay only has parts/incomplete listings")
-                item_data['market_insights'] = "⚠️ eBay only has parts/incomplete listings for this item. No complete sales data available."
-                item_data['price_range'] = "Parts/Incomplete Only"
-                item_data['suggested_cost'] = "No Complete Sales Data"
-                item_data['profit_potential'] = "Cannot estimate - only parts available"
-                item_data['identification_confidence'] = "no_complete_data"
-                return item_data
+                logger.error("❌ NO COMPLETE ITEMS FOUND - trying different search")
+                continue
             elif analysis and analysis.get('error') == 'NO_EBAY_DATA':
                 logger.error("❌ EBAY API FAILED")
                 item_data['market_insights'] = "⚠️ eBay authentication required. Please connect your eBay account."
@@ -1320,24 +1204,21 @@ def enhance_with_ebay_data_user_prioritized(item_data: Dict, vision_analysis: Di
             else:
                 item_data['profit_potential'] = f"${abs(profit):.2f} potential loss"
             
-            # Market insights - FIXED: Ensure all values are strings
+            # Market insights
             insights = []
             if user_keywords:
                 insights.append("Search prioritized by user input")
             else:
                 insights.append("Search based on AI analysis")
             
-            # Convert all values to strings
             total_sold = str(market_analysis.get('total_sold_analyzed', 0))
             avg_price_str = f"{market_analysis.get('average_price', 0):.2f}"
-            median_price_str = f"{market_analysis.get('median_price', 0):.2f}"
             price_range_str = str(market_analysis.get('price_range', 'Unknown'))
             confidence_str = str(market_analysis.get('confidence', 'unknown'))
             
             insights.extend([
-                f"Based on {total_sold} actual COMPLETE eBay sales",
+                f"Based on {total_sold} actual eBay sales",
                 f"Average: ${avg_price_str}",
-                f"Median: ${median_price_str}",
                 f"Range: {price_range_str}",
                 f"Confidence: {confidence_str}"
             ])
