@@ -88,7 +88,6 @@ EBAY_TOKEN_LOCK = threading.Lock()
 EBAY_CATEGORY_MAPPING = {
     'vehicles': {'id': '6000', 'subcategories': {'cars_trucks': '6001'}},
     'collectibles': {'id': '1', 'subcategories': {'pokemon': '183454'}},
-    # Add more if needed, but dynamic preferred
 }
 
 @app.get("/health")
@@ -115,7 +114,7 @@ async def ping():
     return {
         "status": "PONG",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "ebay_ready": bool(ebay_oauth.get_user_token("some_token_id")),  # adjust as needed
+        "ebay_ready": True,  # Simplified for now
         "taxonomy_api": taxonomy_status,
         "search_method": "soldItemsOnly + intelligent relaxation",
         "version": "4.6.0"
@@ -132,13 +131,14 @@ async def root():
             "Intelligent filter relaxation",
             "20–50+ comp target with confidence tiers",
             "Core aspects only (Year/Make/Model)",
-            "Dynamic Taxonomy suggestions"
+            "Dynamic Taxonomy suggestions",
+            "Full eBay OAuth flow"
         ],
         "valuation_endpoint": "/analyze_value/",
         "docs": "/docs"
     }
 
-# === NEW: eBay OAuth Routes for iOS App ===
+# === eBay OAuth Routes (fully restored for iOS app) ===
 
 @app.get("/ebay/oauth/start")
 async def ebay_oauth_start():
@@ -148,57 +148,124 @@ async def ebay_oauth_start():
         logger.info(f"Generated auth URL: {auth_url}")
         return {
             "auth_url": auth_url,
-            "state": state
+            "state": state,
+            "success": True
         }
     except Exception as e:
         logger.error(f"Error generating auth URL: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate eBay auth URL")
 
 @app.get("/ebay/oauth/callback")
-async def ebay_oauth_callback(code: str, state: str = None):
-    """Handle eBay OAuth callback (redirect from eBay after user consent)"""
+async def ebay_oauth_callback(code: str, state: str = None, request: Request = None):
+    """Handle eBay OAuth callback after user consent"""
+    logger.info(f"Callback hit - code: {code[:10]}..., state: {state}, query params: {dict(request.query_params)}")
     try:
         token_data = ebay_oauth.exchange_code_for_token(authorization_code=code, state=state)
-        if token_data and token_data.get("success"):
-            # In production, store token securely and return user token ID
-            token_id = str(uuid.uuid4())
-            # ebay_oauth.tokens[token_id] = token_data  # Assuming your class stores it
-            return {
-                "success": True,
-                "message": "eBay account connected successfully",
-                "token_id": token_id  # Send back to iOS app for future status checks
-            }
-        else:
+        if not token_data or not token_data.get("success"):
+            logger.warning("Token exchange failed")
             raise HTTPException(status_code=400, detail="Token exchange failed")
+
+        # Generate a persistent token ID for the iOS app
+        token_id = str(uuid.uuid4())
+        
+        # Store in ebay_oauth.tokens (adjust if your class stores differently)
+        ebay_oauth.tokens[token_id] = token_data
+        
+        logger.info(f"Token exchange success - new token_id: {token_id}")
+        
+        # Return JSON the iOS app can parse
+        return {
+            "success": True,
+            "message": "eBay account connected successfully",
+            "token_id": token_id,
+            "token_data": {  # Minimal safe subset
+                "expires_in": token_data.get("expires_in"),
+                "refresh_token_expires_in": token_data.get("refresh_token_expires_in"),
+                "is_permanent": token_data.get("is_permanent", False)
+            }
+        }
     except Exception as e:
-        logger.error(f"Callback error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Callback error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Callback processing failed: {str(e)}")
 
 @app.get("/ebay/oauth/status/{token_id}")
 async def ebay_oauth_status(token_id: str):
-    """Check status of stored OAuth token"""
+    """Check status of stored OAuth token (used by iOS app)"""
     try:
         status = ebay_oauth.get_token_status(token_id)
+        logger.info(f"Status check for token {token_id}: {status}")
         return status
     except Exception as e:
-        logger.error(f"Status check error: {e}")
+        logger.error(f"Status check error for {token_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to check token status")
 
-# === End of new OAuth routes ===
+@app.get("/ebay/oauth/token/{token_id}")
+async def ebay_get_token(token_id: str):
+    """Endpoint for iOS to fetch fresh token data (called by getAccessToken)"""
+    try:
+        # Retrieve from storage
+        token_data = ebay_oauth.tokens.get(token_id)
+        if not token_data:
+            raise HTTPException(status_code=404, detail="Token not found")
+        
+        # Return only what's needed for iOS
+        return {
+            "success": True,
+            "access_token": token_data.get("access_token"),
+            "expires_at": token_data.get("access_expires_at"),
+            "refresh_token": token_data.get("refresh_token"),
+            "refresh_token_expires_at": token_data.get("refresh_expires_at"),
+            "is_permanent": token_data.get("is_permanent", False)
+        }
+    except Exception as e:
+        logger.error(f"Get token error for {token_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve token")
 
+@app.delete("/ebay/oauth/token/{token_id}")
+async def ebay_revoke_token(token_id: str):
+    """Revoke and delete stored token"""
+    try:
+        if ebay_oauth.revoke_token(token_id):
+            logger.info(f"Token {token_id} revoked successfully")
+            return {"success": True, "message": "Token revoked"}
+        else:
+            raise HTTPException(status_code=404, detail="Token not found")
+    except Exception as e:
+        logger.error(f"Revoke error for {token_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to revoke token")
+
+# === eBay Market Analysis Routes (matching iOS eBayAPIClient.swift) ===
+
+@app.post("/api/ebay/analyze")
+async def ebay_analyze_market(body: Dict):
+    """Analyze market value (called from iOS eBayAPIClient)"""
+    query = body.get("query")
+    if not query:
+        raise HTTPException(status_code=400, detail="Query required")
+    
+    analysis = ebay_api.analyze_market_trends(keywords=query)
+    return analysis
+
+@app.post("/api/ebay/search/sold")
+async def ebay_search_sold(body: Dict):
+    """Search sold items (called from iOS eBayAPIClient)"""
+    query = body.get("query")
+    limit = body.get("limit", 10)
+    if not query:
+        raise HTTPException(status_code=400, detail="Query required")
+    
+    items, meta = ebay_api.search_sold_items(keywords=query, max_items=limit)
+    return {"items": items, "meta": meta}
+
+# === Core Valuation Endpoint (keep for web/debug) ===
 @app.post("/analyze_value/")
 async def analyze_item_value(item_data: Dict):
-    """
-    Main valuation endpoint - Optimized for reliable comps
-    """
     keywords = item_data.get("keywords") or item_data.get("title", "")
     if not keywords:
         raise HTTPException(400, "keywords or title required")
 
-    # Try to get category dynamically first
     category_id = item_data.get("category_id") or ebay_api.get_category_suggestions(keywords)
 
-    # Core structural aspects only (default for valuation)
     core_aspects = {}
     if "year" in item_data:
         core_aspects["Year"] = str(item_data["year"])
@@ -207,12 +274,10 @@ async def analyze_item_value(item_data: Dict):
     if "model" in item_data:
         core_aspects["Model"] = item_data["model"]
 
-    # Allow optional override for stricter matching (rarely recommended for valuation)
     if item_data.get("strict_match", False):
         if "condition" in item_data:
             core_aspects["Condition"] = item_data["condition"]
 
-    # Run the optimized analysis
     analysis = ebay_api.analyze_market_trends(
         keywords=keywords,
         category_id=category_id,
@@ -240,20 +305,16 @@ async def analyze_item_value(item_data: Dict):
         )
     }
 
-# Debug endpoint to test valuation behavior
 @app.get("/debug/valuation/{keywords:path}")
 async def debug_valuation(keywords: str):
     category = ebay_api.get_category_suggestions(keywords)
     return await analyze_item_value({
         "keywords": keywords,
         "category_id": category,
-        "year": "1955",           # example override
+        "year": "1955",
         "make": "Chevrolet",
         "model": "3100"
     })
-
-# Keep your existing image upload/processing endpoints here if you have them
-# (The CV2/PIL imports are still available for Lift feature)
 
 if __name__ == "__main__":
     import uvicorn
