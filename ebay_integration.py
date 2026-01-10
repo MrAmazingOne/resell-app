@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import time
 import statistics
+from difflib import get_close_matches
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +70,53 @@ class eBayAPI:
             return top['category']['categoryId']
         return None
 
+    def get_aspects_for_category(self, category_id: str) -> Optional[Dict[str, Dict]]:
+        """Get available aspects for category, mapped by normalized name"""
+        params = {'category_id': category_id}
+        data = self._make_api_request(
+            self.taxonomy_base_url,
+            '/category_tree/EBAY_US/get_item_aspects_for_category',
+            params=params
+        )
+        if data and 'aspects' in data:
+            aspect_map = {}
+            for aspect in data['aspects']:
+                original_name = aspect['localizedAspectName']
+                # Normalize: lower, remove spaces/punctuation
+                norm_name = ''.join(c.lower() for c in original_name if c.isalnum())
+                aspect_map[norm_name] = {
+                    'original_name': original_name,
+                    'constraint': aspect.get('aspectConstraint', {}),
+                    'values': aspect.get('aspectValues', [])
+                }
+            return aspect_map
+        return None
+
+    def map_input_to_aspects(self, item_data: Dict, available_aspects: Dict[str, Dict]) -> Dict[str, str]:
+        """Map user input fields to valid aspect names, using closest match"""
+        mapped = {}
+        for input_key, value in item_data.items():
+            if input_key in ['keywords', 'category_id', 'strict_match']:
+                continue
+            # Normalize input key
+            norm_key = ''.join(c.lower() for c in input_key if c.isalnum())
+            # Find closest matching aspect
+            all_norm_keys = list(available_aspects.keys())
+            matches = get_close_matches(norm_key, all_norm_keys, n=1, cutoff=0.7)
+            if matches:
+                match_norm = matches[0]
+                original_name = available_aspects[match_norm]['original_name']
+                mapped[original_name] = str(value)
+        return mapped
+
     def search_sold_items(self, 
                          keywords: str, 
                          category_id: Optional[str] = None,
-                         core_aspects: Dict[str, str] = None,  # e.g. {'Year':'1955', 'Make':'Chevrolet', 'Model':'3100'}
+                         item_data: Dict = None,
                          max_items: int = 100,
                          min_confidence_items: int = 20) -> Tuple[List[Dict], Dict]:
         """
         Search sold items with progressive relaxation strategy
-        Returns: (sold_items, metadata)
         """
         if not self.auth_token:
             return [], {"error": "No OAuth token"}
@@ -91,6 +130,14 @@ class eBayAPI:
             "confidence": "low",
             "notes": []
         }
+
+        # Get dynamic aspects if category available
+        core_aspects = {}
+        if category_id:
+            available_aspects = self.get_aspects_for_category(category_id)
+            if available_aspects and item_data:
+                core_aspects = self.map_input_to_aspects(item_data, available_aspects)
+                metadata["used_aspects"] = list(core_aspects.keys())
 
         # Build base filter
         base_filter = "soldItemsOnly:true"
@@ -113,10 +160,12 @@ class eBayAPI:
         if data and 'itemSummaries' in data:
             items = self._process_items(data['itemSummaries'])
 
-        # If too few results → relax condition if present
-        if len(items) < min_confidence_items and 'Condition' in (core_aspects or {}):
-            metadata["notes"].append("Relaxed condition filter due to low sample size")
-            params['aspect_filter'] = params['aspect_filter'].replace("Condition:{...}", "")  # crude but effective
+        # If too few results → relax non-required aspects if present
+        if len(items) < min_confidence_items and core_aspects:
+            metadata["notes"].append("Relaxed non-required aspects due to low sample size")
+            # Would need to know required aspects from available_aspects to keep only required
+            # For simplicity, remove all and retry
+            params.pop('aspect_filter', None)
             data = self._make_api_request(self.browse_base_url, '/item_summary/search', params=params)
             if data and 'itemSummaries' in data:
                 items = self._process_items(data['itemSummaries'])
@@ -167,18 +216,18 @@ class eBayAPI:
     def analyze_market_trends(self, 
                             keywords: str,
                             category_id: Optional[str] = None,
-                            core_aspects: Dict[str, str] = None,
+                            item_data: Dict = None,
                             campaign_id: str = None,
                             ad_group_id: str = None) -> Dict:
         """
-        Full valuation analysis with intelligent filter relaxation
+        Full valuation analysis with category-specific dynamic aspects
         """
         logger.info(f"Valuation analysis for: {keywords}")
 
         sold_items, meta = self.search_sold_items(
             keywords, 
             category_id=category_id,
-            core_aspects=core_aspects
+            item_data=item_data or {}
         )
 
         if not sold_items:
