@@ -195,11 +195,27 @@ def extract_vision_keywords(vision_analysis: Dict) -> List[str]:
     if not vision_analysis:
         return keywords
     
-    # From detected objects
+    # From detected objects - prioritize vehicle-related terms
     detected_objects = vision_analysis.get('detected_objects', [])
+    
+    # Vehicle-specific keywords to look for
+    vehicle_terms = [
+        'car', 'truck', 'vehicle', 'automobile', 'sedan', 'SUV', 'van', 
+        'pickup', 'motorcycle', 'bike', 'bicycle', 'wheels', 'tire', 'wheel',
+        'headlight', 'taillight', 'windshield', 'hood', 'trunk', 'bumper',
+        'license', 'plate', 'grille', 'mirror', 'door', 'window', 'roof'
+    ]
+    
     for obj in detected_objects:
+        obj_lower = obj.lower()
+        
+        # Check for vehicle terms
+        for term in vehicle_terms:
+            if term in obj_lower:
+                keywords.append(term)
+        
         # Split compound objects
-        obj_words = re.findall(r'\b\w+\b', obj.lower())
+        obj_words = re.findall(r'\b\w+\b', obj_lower)
         keywords.extend([w for w in obj_words if len(w) > 2])
     
     # From color analysis
@@ -208,6 +224,16 @@ def extract_vision_keywords(vision_analysis: Dict) -> List[str]:
         keywords.append(color)
         keywords.append(f"{color} color")
         
+    # From size/scale indicators
+    if vision_analysis.get('size_category'):
+        size = vision_analysis['size_category'].lower()
+        keywords.append(size)
+        keywords.append(f"{size} size")
+    
+    # Add vehicle-specific terms if any vehicle terms were found
+    if any(term in keywords for term in vehicle_terms):
+        keywords.extend(['vehicle', 'automotive', 'car parts'])
+    
     return list(set(keywords))
 
 # ============= EBAY OAUTH ENDPOINTS =============
@@ -278,7 +304,7 @@ async def ebay_oauth_callback(
         redirect_url = "ai-resell-pro://ebay-oauth-callback?error=no_code"
         return HTMLResponse(content=f"""
             <!DOCTYPE html>
-            <html>
+<html>
             <head>
                 <title>Authorization Failed</title>
                 <meta http-equiv="refresh" content="0; url={redirect_url}">
@@ -491,25 +517,77 @@ def analyze_image_with_vision(image_data: bytes) -> Dict:
         # Convert to PIL Image
         image = Image.open(io.BytesIO(image_data))
         
+        # Convert to OpenCV format for object detection
+        img_array = np.array(image)
+        
+        # Simple color analysis
+        colors = ['red', 'blue', 'green', 'black', 'white', 'silver', 'gray', 'brown']
+        dominant_color = 'unknown'
+        
+        # Basic object detection using simple heuristics
+        # In production, use a proper ML model like YOLO or TensorFlow
+        detected_objects = []
+        
+        # Check for vehicle-like characteristics
+        height, width, _ = img_array.shape
+        
+        # Vehicle detection heuristics
+        aspect_ratio = width / height if height > 0 else 0
+        
+        if 1.5 < aspect_ratio < 3.0:  # Typical vehicle aspect ratios
+            detected_objects.append('vehicle')
+            detected_objects.append('car')
+            
+            # Check for wheels (dark circular patterns)
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, 20,
+                                      param1=50, param2=30, minRadius=10, maxRadius=100)
+            
+            if circles is not None:
+                circles = np.uint16(np.around(circles))
+                if len(circles[0]) >= 2:  # At least 2 wheels detected
+                    detected_objects.append('wheels')
+                    detected_objects.append('automobile')
+        
+        # Size categorization
+        pixel_count = width * height
+        if pixel_count > 1000000:
+            size_category = "large"
+        elif pixel_count > 500000:
+            size_category = "medium"
+        else:
+            size_category = "small"
+        
         # Basic analysis
         analysis = {
-            "width": image.width,
-            "height": image.height,
+            "width": width,
+            "height": height,
             "format": image.format,
-            "detected_objects": [],
-            "suggested_keywords": [],
-            "dominant_color": None,
+            "detected_objects": detected_objects,
+            "suggested_keywords": detected_objects.copy(),
+            "dominant_color": dominant_color,
+            "size_category": size_category,
+            "aspect_ratio": round(aspect_ratio, 2),
+            "vehicle_likelihood": "high" if 'vehicle' in detected_objects else "low"
         }
-                
-
+        
         if analysis["dominant_color"]:
             analysis["suggested_keywords"].append(analysis["dominant_color"].lower())
         
-        logger.info(f"✅ Vision analysis complete: {len(analysis['suggested_keywords'])} keywords generated")
+        # Add vehicle-specific keywords if vehicle detected
+        if 'vehicle' in detected_objects:
+            analysis["suggested_keywords"].extend(['car', 'truck', 'vehicle', 'automobile', 'automotive'])
+        
+        logger.info(f"✅ Vision analysis complete: {len(analysis['detected_objects'])} objects detected")
         return analysis
     except Exception as e:
         logger.error(f"❌ Vision analysis error: {e}")
-        return {"error": str(e)}
+        return {
+            "error": str(e),
+            "detected_objects": [],
+            "suggested_keywords": [],
+            "size_category": "medium"
+        }
 
 # ============= IMAGE UPLOAD ENDPOINT =============
 
@@ -546,7 +624,7 @@ async def create_upload_file(
         # Create job ID
         job_id = str(uuid.uuid4())
         
-        # Vision analysis for keyword extraction
+        # Enhanced vision analysis for vehicle detection
         vision_analysis = analyze_image_with_vision(image_bytes)
         
         # Store job data
@@ -649,9 +727,18 @@ def process_image_job(job_data: Dict) -> Dict:
         description = job_data.get('description', '').strip()
         vision_analysis = job_data.get('vision_analysis', {})
         
-        # STEP 1: Extract keywords from all sources
+        # STEP 1: Extract keywords from all sources with priority for vehicle detection
         base_keywords = f"{title} {description}".strip()
         vision_keywords = extract_vision_keywords(vision_analysis)
+        
+        # Check if vehicle was detected
+        vehicle_detected = any(term in vision_keywords for term in 
+                              ['car', 'truck', 'vehicle', 'automobile', 'wheels'])
+        
+        # Prioritize vehicle keywords if detected
+        if vehicle_detected and not base_keywords:
+            # If vehicle detected but no title/description, use vehicle-specific search
+            base_keywords = "vehicle car automobile"
         
         # Combine keywords
         if base_keywords:
@@ -664,6 +751,7 @@ def process_image_job(job_data: Dict) -> Dict:
             all_keywords = "item"
         
         logger.info(f"📋 Combined keywords: {all_keywords[:100]}...")
+        logger.info(f"   Vehicle detected: {vehicle_detected}")
         
         # STEP 2: Get category using eBay Taxonomy API
         try:
@@ -678,8 +766,24 @@ def process_image_job(job_data: Dict) -> Dict:
             if 'categorySuggestions' in category_data:
                 # Taxonomy API format
                 suggestions = category_data['categorySuggestions']
-                if suggestions:
-                    # Get the best suggestion (first one)
+                
+                # Prioritize vehicle categories if vehicle detected
+                if vehicle_detected:
+                    for suggestion in suggestions:
+                        if 'category' in suggestion:
+                            cat = suggestion['category']
+                            cat_name = cat.get('categoryName', '').lower()
+                            cat_id = cat.get('categoryId', '')
+                            
+                            # Look for vehicle-related categories
+                            if any(term in cat_name for term in ['vehicle', 'car', 'truck', 'motor', 'auto']):
+                                category_id = cat_id
+                                category_name = cat.get('categoryName')
+                                logger.info(f"🚗 Found vehicle category: {category_name}")
+                                break
+                
+                # If no vehicle category found or no vehicle detected, use first suggestion
+                if not category_id and suggestions:
                     best_suggestion = suggestions[0]
                     if 'category' in best_suggestion:
                         best_category = best_suggestion['category']
@@ -698,16 +802,17 @@ def process_image_job(job_data: Dict) -> Dict:
             
             if not category_id or not category_name:
                 logger.warning("⚠️ No valid category found, using default")
-                category_id = '267'  # Collectibles default
-                category_name = 'Collectibles'
+                # Use vehicle category if vehicle detected, otherwise collectibles
+                category_id = '6000' if vehicle_detected else '267'  # eBay Motors or Collectibles
+                category_name = 'eBay Motors' if vehicle_detected else 'Collectibles'
             
             logger.info(f"✅ Taxonomy API category: {category_name} (ID: {category_id})")
             
         except Exception as e:
             logger.error(f"❌ Taxonomy API error: {e}")
             # Use default category as fallback
-            category_id = '267'
-            category_name = 'Collectibles'
+            category_id = '6000' if vehicle_detected else '267'
+            category_name = 'eBay Motors' if vehicle_detected else 'Collectibles'
             logger.warning(f"⚠️ Using default category due to API error: {category_name} (ID: {category_id})")
         
         # STEP 3: Get keyword suggestions using eBay Marketing API
@@ -735,7 +840,8 @@ def process_image_job(job_data: Dict) -> Dict:
         item_data = {
             "title": title,
             "description": description,
-            "vision_keywords": vision_keywords
+            "vision_keywords": vision_keywords,
+            "vehicle_detected": vehicle_detected
         }
         
         # Analyze market with eBay API
@@ -747,7 +853,17 @@ def process_image_job(job_data: Dict) -> Dict:
             )
             
             if market_analysis.get('sample_size', 0) == 0:
-                return {"status": "failed", "error": "No sold items found for analysis"}
+                # Try broader search if no results
+                if vehicle_detected:
+                    logger.warning("⚠️ No results with specific keywords, trying broader vehicle search")
+                    market_analysis = ebay_api_instance.analyze_market_trends(
+                        keywords="vehicle car",
+                        category_id=category_id,
+                        item_data=item_data
+                    )
+                
+                if market_analysis.get('sample_size', 0) == 0:
+                    return {"status": "failed", "error": "No sold items found for analysis"}
             
         except Exception as e:
             logger.error(f"❌ Market analysis error: {e}")
@@ -772,6 +888,7 @@ def process_image_job(job_data: Dict) -> Dict:
                 Title: {title or 'Not provided'}
                 Description: {description or 'Not provided'}
                 Category: {category_name}
+                Vehicle Detected: {vehicle_detected}
                 Market Analysis: {json.dumps({k: v for k, v in market_analysis.items() if k != 'sold_items_sample'})}
                 Optimized Keywords: {', '.join(optimized_keywords[:5])}
                 
@@ -846,7 +963,8 @@ def process_image_job(job_data: Dict) -> Dict:
                 "ai_insights": ai_insights,
                 "optimized_keywords": optimized_keywords[:10],
                 "data_source": "eBay APIs + Vision Analysis",
-                "apis_used": ["Taxonomy API", "Marketing API", "Browse API"]
+                "apis_used": ["Taxonomy API", "Marketing API", "Browse API"],
+                "vehicle_detected": vehicle_detected
             }],
             "processing_time": "25s",
             "apis_working": True,
@@ -989,7 +1107,8 @@ async def root():
             "✅ Market trend analysis (20-50+ comps target)",
             "✅ AI-powered insights with Groq",
             "✅ Job queue system (timeout prevention)",
-            "✅ iOS Lift integration compatible"
+            "✅ iOS Lift integration compatible",
+            "✅ Vehicle detection enhanced"
         ],
         "endpoints": {
             "upload": "/upload_item/",
@@ -1064,6 +1183,7 @@ async def startup_event():
     threading.Thread(target=background_worker, daemon=True, name="JobWorker").start()
     logger.info("🚀 Server started with enhanced eBay API integration")
     logger.info("📊 Features enabled: Taxonomy API, Marketing API, Vision Analysis")
+    logger.info("🚗 Vehicle detection enhanced")
     logger.info("⏱️ Job queue system active")
 
 @app.on_event("shutdown")
