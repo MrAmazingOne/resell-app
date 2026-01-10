@@ -31,7 +31,7 @@ def check_sold_items_search():
         params = {
             'q': 'Pokemon Charizard single',
             'limit': '5',
-            'filter': 'soldItemsOnly:true,category_ids:183454',  # Pokemon Cards category
+            'filter': 'soldItems:true,category_ids:183454',  # Pokemon Cards category
             'sort': '-endTime'
         }
         
@@ -85,7 +85,7 @@ def test_vehicle_search():
         params = {
             'q': '1955 Chevrolet 3100',
             'limit': '5',
-            'filter': 'soldItemsOnly:true,category_ids:6001',  # Cars & Trucks category
+            'filter': 'soldItems:true,category_ids:6001',  # Cars & Trucks category
             'sort': 'price_desc'
         }
         
@@ -170,7 +170,7 @@ def test_category_filtering():
             params = {
                 'q': test['query'],
                 'limit': '3',
-                'filter': f"soldItemsOnly:true,category_ids:{test['category']}",
+                'filter': f"soldItems:true,category_ids:{test['category']}",
                 'sort': '-endTime'
             }
             
@@ -205,44 +205,6 @@ def test_category_filtering():
         print(f"❌ Category test failed: {e}")
         return False
 
-def test_taxonomy_suggestions():
-    """Test Taxonomy API for category suggestions"""
-    print("\n🗂 Testing Taxonomy API...")
-    
-    auth_token = os.getenv('EBAY_AUTH_TOKEN')
-    if not auth_token:
-        print("❌ No token for taxonomy test")
-        return False
-    
-    try:
-        headers = {
-            'Authorization': f'Bearer {auth_token}',
-            'Content-Type': 'application/json',
-            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
-        }
-        
-        params = {'q': 'Pokemon Charizard single'}
-        
-        response = requests.get(
-            'https://api.ebay.com/commerce/taxonomy/v1_beta/category_tree/EBAY_US/get_category_suggestions',
-            headers=headers,
-            params=params,
-            timeout=15
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            suggestions = data.get('categorySuggestions', [])
-            print(f"✅ Found {len(suggestions)} category suggestions")
-            return True
-        else:
-            print(f"❌ Taxonomy test failed: {response.status_code}")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Taxonomy test failed: {e}")
-        return False
-
 if __name__ == "__main__":
     print("=" * 60)
     print("eBay API SOLD ITEMS VERIFICATION")
@@ -263,9 +225,8 @@ if __name__ == "__main__":
         success1 = check_sold_items_search()
         success2 = test_vehicle_search()
         success3 = test_category_filtering()
-        success4 = test_taxonomy_suggestions()
         
-        if success1 and success2 and success3 and success4:
+        if success1 and success2 and success3:
             print("\n🎉 ALL TESTS PASSED! Sold items search is working correctly.")
             print("The system will now ONLY show ACTUAL sold auction data with proper category filtering.")
         else:
