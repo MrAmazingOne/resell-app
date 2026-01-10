@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 import logging
 import base64
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone  # ← FIXED: added timezone here
 from ebay_integration import ebay_api
 from dotenv import load_dotenv
 import threading
@@ -43,16 +43,6 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
-
-@app.get("/health")
-@app.get("/health/")
-async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": app.version,
-        "service": "resell-pro-api"
-    }
 
 # CORS middleware
 app.add_middleware(
@@ -98,8 +88,18 @@ EBAY_TOKEN_LOCK = threading.Lock()
 EBAY_CATEGORY_MAPPING = {
     'vehicles': {'id': '6000', 'subcategories': {'cars_trucks': '6001'}},
     'collectibles': {'id': '1', 'subcategories': {'pokemon': '183454'}},
-    # ... (keep your full mapping if desired, but dynamic preferred)
+    # Add more if needed, but dynamic preferred
 }
+
+@app.get("/health")
+@app.get("/health/")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": app.version,
+        "service": "resell-pro-api"
+    }
 
 @app.get("/ping")
 async def ping():
@@ -114,7 +114,7 @@ async def ping():
     
     return {
         "status": "PONG",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "ebay_ready": bool(ebay_oauth.get_user_token("some_token_id")),  # adjust as needed
         "taxonomy_api": taxonomy_status,
         "search_method": "soldItemsOnly + intelligent relaxation",
@@ -204,8 +204,8 @@ async def debug_valuation(keywords: str):
         "model": "3100"
     })
 
-# Keep your existing image upload/processing endpoints here
-# (assuming you have one - the CV2/PIL imports are still available)
+# Keep your existing image upload/processing endpoints here if you have them
+# (The CV2/PIL imports are still available for Lift feature)
 
 if __name__ == "__main__":
     import uvicorn
