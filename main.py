@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Resell Pro API - SOLD ITEMS ONLY", 
-    version="4.7.0",
+    version="4.8.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -68,7 +68,7 @@ except Exception as e:
     groq_client = None
     groq_model = None
 
-# In-memory job queue (KEPT - essential for timeout prevention)
+# In-memory job queue
 job_queue = queue.Queue()
 job_storage = {}
 job_lock = threading.Lock()
@@ -381,7 +381,7 @@ async def revoke_ebay_token(token_id: str):
         logger.error(f"Revoke error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============= VISION ANALYSIS (KEPT - essential for image identification) =============
+# ============= VISION ANALYSIS =============
 
 def analyze_image_with_vision(image_data: bytes) -> Dict:
     """Analyze image to extract keywords for search"""
@@ -389,23 +389,45 @@ def analyze_image_with_vision(image_data: bytes) -> Dict:
         # Convert to PIL Image
         image = Image.open(io.BytesIO(image_data))
         
-        # Basic analysis (you can enhance this with your existing vision code)
+        # Basic analysis
         analysis = {
             "width": image.width,
             "height": image.height,
             "format": image.format,
-            "detected_objects": [],  # Placeholder for CV2 detection
+            "detected_objects": [],
             "suggested_keywords": []
         }
         
-        # TODO: Add your CV2/vision detection here if needed
+        # Try to detect if this is a vehicle image
+        try:
+            # Convert to OpenCV format
+            nparr = np.frombuffer(image_data, np.uint8)
+            img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if img_cv is not None:
+                # Simple color analysis
+                avg_color = np.mean(img_cv, axis=(0, 1))
+                colors = ['Blue', 'Green', 'Red']
+                dominant_color_idx = np.argmax(avg_color)
+                analysis["dominant_color"] = colors[dominant_color_idx]
+                
+                # Check if image shows full vehicle vs part
+                height, width = img_cv.shape[:2]
+                aspect_ratio = width / height
+                
+                if 1.2 <= aspect_ratio <= 2.5:  # Typical vehicle aspect ratios
+                    analysis["likely_vehicle"] = True
+                    analysis["likely_full_vehicle"] = True if aspect_ratio > 1.5 else False
+                    
+        except Exception as e:
+            logger.debug(f"CV2 analysis skipped: {e}")
         
         return analysis
     except Exception as e:
         logger.error(f"Vision analysis error: {e}")
         return {"error": str(e)}
 
-# ============= IMAGE UPLOAD ENDPOINT (RESTORED) =============
+# ============= IMAGE UPLOAD ENDPOINT =============
 
 @app.post("/upload_item/")
 async def create_upload_file(
@@ -445,6 +467,7 @@ async def create_upload_file(
             
             job_storage[job_id] = {
                 'image_base64': image_base64,
+                'image_bytes': image_bytes,  # Keep bytes for processing
                 'mime_type': file.content_type,
                 'title': title,
                 'description': description,
@@ -490,8 +513,14 @@ async def get_job_status(job_id: str):
     }
     
     if job_data.get('status') == 'completed':
-        response["result"] = job_data.get('result')
+        result = job_data.get('result', {})
+        response["result"] = result
         response["completed_at"] = job_data.get('completed_at')
+        
+        # Ensure items key exists for iOS compatibility
+        if "items" not in result:
+            response["result"]["items"] = []
+            
     elif job_data.get('status') == 'failed':
         response["error"] = job_data.get('error', 'Unknown error')
         response["completed_at"] = job_data.get('completed_at')
@@ -500,7 +529,7 @@ async def get_job_status(job_id: str):
     
     return response
 
-# ============= JOB PROCESSING (RESTORED) =============
+# ============= JOB PROCESSING =============
 
 def process_image_job(job_data: Dict) -> Dict:
     """Process image with Groq AI + eBay market analysis"""
@@ -515,47 +544,125 @@ def process_image_job(job_data: Dict) -> Dict:
         
         # Combine all sources for keywords
         combined_keywords = f"{title} {description}".strip()
+        if combined_keywords == "":
+            # Use vision analysis to suggest keywords
+            if vision_analysis.get('likely_vehicle'):
+                combined_keywords = "vehicle car truck"
         
-        # Use eBay API for market analysis
-        try:
-            category_id = ebay_api.get_category_suggestions(combined_keywords)
-            
-            analysis = ebay_api.analyze_market_trends(
-                keywords=combined_keywords,
-                category_id=category_id,
-                item_data={
-                    "title": title,
-                    "description": description
-                }
-            )
-            
-            return {
-                "status": "completed",
-                "result": {
-                    "message": "Analysis complete",
-                    "items": [{
-                        "title": title or "Item",
-                        "description": description or "No description",
-                        "price_range": f"${analysis.get('lowest_price', 0):.2f} - ${analysis.get('highest_price', 0):.2f}",
-                        "resellability_rating": 7,  # Placeholder
-                        "suggested_cost": f"${analysis.get('recommended_buy_below', 0):.2f}",
-                        "market_insights": f"Based on {analysis.get('sample_size', 0)} sold items",
-                        "profit_potential": f"${analysis.get('median_price', 0) - analysis.get('recommended_buy_below', 0):.2f}",
-                        "category": category_id,
-                        "ebay_specific_tips": ["Check completed listings", "Use best offer"],
-                        "confidence": analysis.get('confidence', 'medium')
-                    }],
-                    "processing_time": "25s",
-                    "ebay_data_used": True
-                }
-            }
-        except Exception as e:
-            logger.error(f"Market analysis error: {e}")
-            return {"status": "failed", "error": str(e)}
+        # Get category suggestions
+        category_id = ebay_api.get_category_suggestions(combined_keywords)
+        
+        # Prepare item data for aspect extraction
+        item_data = {
+            "title": title,
+            "description": description
+        }
+        
+        # Analyze market trends with optimized search
+        analysis = ebay_api.analyze_market_trends(
+            keywords=combined_keywords,
+            category_id=category_id,
+            item_data=item_data
+        )
+        
+        # Calculate profit potential
+        profit_potential = 0.0
+        if analysis['median_price'] > 0 and analysis['recommended_buy_below'] > 0:
+            profit_potential = analysis['median_price'] - analysis['recommended_buy_below']
+        
+        # Create result with iOS-compatible format
+        result = {
+            "message": f"Analysis complete - {analysis['confidence'].upper()} confidence",
+            "items": [{
+                "title": title or "Identified Item",
+                "description": description or "No description provided",
+                "price_range": analysis['price_range'],
+                "lowest_price": analysis['lowest_price'],
+                "highest_price": analysis['highest_price'],
+                "average_price": analysis['average_price'],
+                "median_price": analysis['median_price'],
+                "resellability_rating": self._calculate_resellability(analysis),
+                "suggested_cost": f"${analysis['recommended_buy_below']:.2f}",
+                "market_insights": analysis['market_notes'],
+                "profit_potential": f"${profit_potential:.2f}",
+                "category": category_id,
+                "sample_size": analysis['sample_size'],
+                "confidence": analysis['confidence'],
+                "confidence_reason": analysis['confidence_reason'],
+                "days_since_last_sale": analysis['days_since_last_sale'],
+                "ebay_specific_tips": self._generate_ebay_tips(analysis),
+                "data_source": "eBay Sold Listings",
+                "aspects_used": analysis.get('aspects_used', [])
+            }],
+            "processing_time": "25s",
+            "ebay_data_used": True,
+            "market_analysis": analysis
+        }
+        
+        return {
+            "status": "completed",
+            "result": result
+        }
         
     except Exception as e:
         logger.error(f"Job processing error: {e}")
         return {"status": "failed", "error": str(e)}
+
+def _calculate_resellability(self, analysis: Dict) -> int:
+    """Calculate resellability rating 1-10"""
+    rating = 5  # Base
+    
+    # Adjust based on sample size
+    sample_size = analysis['sample_size']
+    if sample_size >= 50:
+        rating += 3
+    elif sample_size >= 20:
+        rating += 2
+    elif sample_size >= 10:
+        rating += 1
+    elif sample_size < 5:
+        rating -= 2
+    
+    # Adjust based on confidence
+    confidence = analysis['confidence']
+    if confidence == 'high':
+        rating += 2
+    elif confidence == 'good':
+        rating += 1
+    elif confidence == 'very low':
+        rating -= 2
+    
+    # Adjust based on price stability
+    if analysis['price_stability'] == 'high':
+        rating += 1
+    
+    # Ensure rating stays within 1-10
+    return max(1, min(10, rating))
+
+def _generate_ebay_tips(self, analysis: Dict) -> List[str]:
+    """Generate eBay-specific tips based on analysis"""
+    tips = []
+    
+    sample_size = analysis['sample_size']
+    confidence = analysis['confidence']
+    
+    if sample_size >= 20:
+        tips.append("Strong market data - list with confidence")
+    elif sample_size >= 10:
+        tips.append("Moderate data - consider checking similar items")
+    else:
+        tips.append("Limited data - research similar items before listing")
+    
+    if confidence in ['high', 'good']:
+        tips.append("Price competitively based on recent sold data")
+    
+    if analysis['days_since_last_sale'] <= 7:
+        tips.append("Very active market - list now for best results")
+    
+    tips.append("Use clear photos and detailed description")
+    tips.append("Consider free shipping to increase visibility")
+    
+    return tips
 
 def background_worker():
     """Background worker for job processing"""
@@ -627,6 +734,7 @@ async def shutdown_event():
 @app.get("/health")
 @app.get("/health/")
 async def health_check():
+    update_activity()
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -643,7 +751,7 @@ async def ping():
         "status": "PONG",
         "timestamp": datetime.now().isoformat(),
         "ebay_ready": bool(get_ebay_token()),
-        "version": "4.7.0"
+        "version": "4.8.0"
     }
 
 @app.get("/")
@@ -652,21 +760,74 @@ async def root():
     ebay_token = get_ebay_token()
     
     return {
-        "message": "AI Resell Pro API - v4.7 (Full System + Optimized Search)",
+        "message": "AI Resell Pro API - v4.8 (Full System + Optimized Search)",
         "status": "OPERATIONAL" if groq_client and ebay_token else "PARTIAL",
         "ebay_authentication": "✅ Connected" if ebay_token else "❌ Required",
         "features": [
             "✅ Image upload with vision analysis",
             "✅ Job queue system (timeout prevention)",
             "✅ Multi-item processing",
-            "✅ Optimized eBay search (20-50+ comps)",
+            "✅ Optimized eBay search (20-50+ comps target)",
             "✅ Core aspect filtering (Year/Make/Model)",
+            "✅ Intelligent sample size handling",
             "✅ Long-term OAuth (2 years)"
         ],
         "upload_endpoint": "/upload_item/",
         "auth_endpoint": "/ebay/oauth/start",
         "docs": "/docs"
     }
+
+# ============= DEBUG ENDPOINTS =============
+
+@app.get("/debug/ebay-search/{keywords}")
+async def debug_ebay_search(keywords: str, category: Optional[str] = None):
+    """Debug endpoint to test eBay search directly"""
+    update_activity()
+    
+    try:
+        category_id = None
+        if category == 'vehicles':
+            category_id = '6001'
+        elif category == 'pokemon':
+            category_id = '183454'
+        
+        items = ebay_api.search_sold_items(keywords, category_id=category_id, limit=10)
+        
+        return {
+            "keywords": keywords,
+            "category_id": category_id,
+            "items_found": len(items),
+            "items": items[:5],  # Return first 5 for debugging
+            "sample_prices": [item['price'] for item in items[:10]]
+        }
+        
+    except Exception as e:
+        logger.error(f"Debug search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/valuation/{keywords}")
+async def debug_valuation(keywords: str, category: Optional[str] = None):
+    """Debug endpoint to test valuation directly"""
+    update_activity()
+    
+    try:
+        category_id = None
+        if category == 'vehicles':
+            category_id = '6001'
+        elif category == 'pokemon':
+            category_id = '183454'
+        
+        analysis = ebay_api.analyze_market_trends(keywords, category_id=category_id)
+        
+        return {
+            "keywords": keywords,
+            "category_id": category_id,
+            "analysis": analysis
+        }
+        
+    except Exception as e:
+        logger.error(f"Debug valuation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
