@@ -3,7 +3,7 @@
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from groq import Groq
 from ebay_oauth import ebay_oauth
 import uuid
@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 import logging
 import base64
 import requests
-from datetime import datetime, timedelta, timezone  # ← FIXED: added timezone here
+from datetime import datetime, timedelta, timezone
 from ebay_integration import ebay_api
 from dotenv import load_dotenv
 import threading
@@ -137,6 +137,54 @@ async def root():
         "valuation_endpoint": "/analyze_value/",
         "docs": "/docs"
     }
+
+# === NEW: eBay OAuth Routes for iOS App ===
+
+@app.get("/ebay/oauth/start")
+async def ebay_oauth_start():
+    """Generate eBay authorization URL for user consent"""
+    try:
+        auth_url, state = ebay_oauth.generate_auth_url()
+        logger.info(f"Generated auth URL: {auth_url}")
+        return {
+            "auth_url": auth_url,
+            "state": state
+        }
+    except Exception as e:
+        logger.error(f"Error generating auth URL: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate eBay auth URL")
+
+@app.get("/ebay/oauth/callback")
+async def ebay_oauth_callback(code: str, state: str = None):
+    """Handle eBay OAuth callback (redirect from eBay after user consent)"""
+    try:
+        token_data = ebay_oauth.exchange_code_for_token(authorization_code=code, state=state)
+        if token_data and token_data.get("success"):
+            # In production, store token securely and return user token ID
+            token_id = str(uuid.uuid4())
+            # ebay_oauth.tokens[token_id] = token_data  # Assuming your class stores it
+            return {
+                "success": True,
+                "message": "eBay account connected successfully",
+                "token_id": token_id  # Send back to iOS app for future status checks
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Token exchange failed")
+    except Exception as e:
+        logger.error(f"Callback error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/ebay/oauth/status/{token_id}")
+async def ebay_oauth_status(token_id: str):
+    """Check status of stored OAuth token"""
+    try:
+        status = ebay_oauth.get_token_status(token_id)
+        return status
+    except Exception as e:
+        logger.error(f"Status check error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to check token status")
+
+# === End of new OAuth routes ===
 
 @app.post("/analyze_value/")
 async def analyze_item_value(item_data: Dict):
