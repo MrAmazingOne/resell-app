@@ -207,17 +207,7 @@ def extract_vision_keywords(vision_analysis: Dict) -> List[str]:
         color = vision_analysis['dominant_color'].lower()
         keywords.append(color)
         keywords.append(f"{color} color")
-    
-    # From vehicle detection
-    if vision_analysis.get('likely_vehicle', False):
-        keywords.append('vehicle')
-        if vision_analysis.get('likely_full_vehicle', False):
-            keywords.append('complete vehicle')
-            keywords.append('entire vehicle')
-        else:
-            keywords.append('vehicle part')
-            keywords.append('component')
-    
+        
     # From size/scale indicators
     if vision_analysis.get('size_category'):
         size = vision_analysis['size_category'].lower()
@@ -251,9 +241,10 @@ async def ebay_oauth_start():
             "timestamp": datetime.now().isoformat(),
             "token_duration": "permanent (2-year refresh token)",
             "required_scopes": [
-                "https://api.ebay.com/oauth/api_scope",
-                "https://api.ebay.com/oauth/api_scope/commerce.taxonomy",
-                "https://api.ebay.com/oauth/api_scope/sell.marketing.readonly"
+                "https://api.ebay.com/oauth/api_scope",  # Public data including Taxonomy API
+                "https://api.ebay.com/oauth/api_scope/sell.marketing",
+                "https://api.ebay.com/oauth/api_scope/sell.inventory",
+                "https://api.ebay.com/oauth/api_scope/sell.account"
             ]
         }
         
@@ -514,57 +505,10 @@ def analyze_image_with_vision(image_data: bytes) -> Dict:
             "detected_objects": [],
             "suggested_keywords": [],
             "dominant_color": None,
-            "likely_vehicle": False,
-            "likely_full_vehicle": False,
             "size_category": "medium"
         }
-        
-        # Try to detect if this is a vehicle image
-        try:
-            # Convert to OpenCV format
-            nparr = np.frombuffer(image_data, np.uint8)
-            img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if img_cv is not None:
-                # Simple color analysis
-                avg_color = np.mean(img_cv, axis=(0, 1))
-                colors = ['Blue', 'Green', 'Red']
-                dominant_color_idx = np.argmax(avg_color)
-                analysis["dominant_color"] = colors[dominant_color_idx]
                 
-                # Check if image shows full vehicle vs part
-                height, width = img_cv.shape[:2]
-                aspect_ratio = width / height
-                
-                # Detect if it looks like a vehicle
-                if 1.2 <= aspect_ratio <= 2.5:  # Typical vehicle aspect ratios
-                    analysis["likely_vehicle"] = True
-                    analysis["likely_full_vehicle"] = True if aspect_ratio > 1.5 else False
-                    
-                # Size estimation based on aspect ratio
-                if aspect_ratio > 2.0:
-                    analysis["size_category"] = "large"
-                elif aspect_ratio < 0.8:
-                    analysis["size_category"] = "small"
-                
-                # Simple object detection based on color distribution
-                color_std = np.std(img_cv)
-                if color_std < 30:
-                    analysis["detected_objects"].append("solid color object")
-                elif color_std > 60:
-                    analysis["detected_objects"].append("multicolor object")
-                    
-        except Exception as e:
-            logger.debug(f"CV2 analysis skipped: {e}")
-        
-        # Generate suggested keywords based on analysis
-        if analysis["likely_vehicle"]:
-            analysis["suggested_keywords"].extend(["vehicle", "auto", "transport"])
-            if analysis["likely_full_vehicle"]:
-                analysis["suggested_keywords"].extend(["complete", "whole", "entire"])
-            else:
-                analysis["suggested_keywords"].extend(["part", "component", "piece"])
-        
+
         if analysis["dominant_color"]:
             analysis["suggested_keywords"].append(analysis["dominant_color"].lower())
         
@@ -730,24 +674,48 @@ def process_image_job(job_data: Dict) -> Dict:
         
         # STEP 2: Get category using eBay Taxonomy API
         try:
-            category_suggestions = ebay_api_instance.get_category_suggestions(all_keywords)
-            if not category_suggestions:
+            category_data = ebay_api_instance.get_category_suggestions(all_keywords)
+            if not category_data:
                 return {"status": "failed", "error": "eBay Taxonomy API failed to return category suggestions"}
             
-            # Extract best category
-            suggestions = category_suggestions.get('categorySuggestions', [])
-            if not suggestions:
-                return {"status": "failed", "error": "No category suggestions found"}
+            # Extract best category with new API structure compatibility
+            category_id = None
+            category_name = None
             
-            best_category = suggestions[0]
-            category_id = best_category['category']['categoryId']
-            category_name = best_category['category']['categoryName']
+            if 'categorySuggestions' in category_data:
+                # Taxonomy API format
+                suggestions = category_data['categorySuggestions']
+                if suggestions:
+                    # Get the best suggestion (first one)
+                    best_suggestion = suggestions[0]
+                    if 'category' in best_suggestion:
+                        best_category = best_suggestion['category']
+                        category_id = best_category.get('categoryId')
+                        category_name = best_category.get('categoryName')
+                    
+                    # If first one doesn't have category, try to find one that does
+                    if not category_id:
+                        for suggestion in suggestions:
+                            if 'category' in suggestion:
+                                cat = suggestion['category']
+                                if cat.get('categoryId'):
+                                    category_id = cat.get('categoryId')
+                                    category_name = cat.get('categoryName')
+                                    break
+            
+            if not category_id or not category_name:
+                logger.warning("⚠️ No valid category found, using default")
+                category_id = '267'  # Collectibles default
+                category_name = 'Collectibles'
             
             logger.info(f"✅ Taxonomy API category: {category_name} (ID: {category_id})")
             
         except Exception as e:
             logger.error(f"❌ Taxonomy API error: {e}")
-            return {"status": "failed", "error": f"Category identification failed: {str(e)}"}
+            # Use default category as fallback
+            category_id = '267'
+            category_name = 'Collectibles'
+            logger.warning(f"⚠️ Using default category due to API error: {category_name} (ID: {category_id})")
         
         # STEP 3: Get keyword suggestions using eBay Marketing API
         try:
@@ -1046,67 +1014,6 @@ async def root():
     }
 
 # ============= DEBUG & TESTING ENDPOINTS =============
-
-@app.get("/debug/ebay-search/{keywords}")
-async def debug_ebay_search(keywords: str, category: Optional[str] = None):
-    """Debug endpoint to test eBay search directly"""
-    update_activity()
-    
-    try:
-        if not ebay_api_instance:
-            raise HTTPException(status_code=500, detail="eBay API not initialized")
-        
-        category_id = None
-        if category == 'vehicles':
-            category_id = '6001'
-        elif category == 'pokemon':
-            category_id = '183454'
-        elif category == 'electronics':
-            category_id = '58058'
-        
-        # Test search
-        items = ebay_api_instance.search_sold_items(keywords, category_id=category_id, limit=10)
-        
-        return {
-            "keywords": keywords,
-            "category_id": category_id,
-            "items_found": len(items),
-            "items": items[:5],
-            "sample_prices": [item['price'] for item in items[:10]]
-        }
-        
-    except Exception as e:
-        logger.error(f"Debug search error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/debug/valuation/{keywords}")
-async def debug_valuation(keywords: str, category: Optional[str] = None):
-    """Debug endpoint to test valuation directly"""
-    update_activity()
-    
-    try:
-        if not ebay_api_instance:
-            raise HTTPException(status_code=500, detail="eBay API not initialized")
-        
-        category_id = None
-        if category == 'vehicles':
-            category_id = '6001'
-        elif category == 'pokemon':
-            category_id = '183454'
-        
-        # Test market analysis
-        analysis = ebay_api_instance.analyze_market_trends(keywords, category_id=category_id)
-        
-        return {
-            "keywords": keywords,
-            "category_id": category_id,
-            "analysis": analysis,
-            "data_quality": "high" if analysis['sample_size'] >= 20 else "medium" if analysis['sample_size'] >= 10 else "low"
-        }
-        
-    except Exception as e:
-        logger.error(f"Debug valuation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug/api-test")
 async def debug_api_test():

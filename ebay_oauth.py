@@ -45,9 +45,7 @@ class eBayOAuth:
             "https://api.ebay.com/oauth/api_scope",
             "https://api.ebay.com/oauth/api_scope/sell.inventory",
             "https://api.ebay.com/oauth/api_scope/sell.account",
-            "https://api.ebay.com/oauth/api_scope/sell.marketing.readonly",
-            "https://api.ebay.com/oauth/api_scope/commerce.taxonomy",
-            "https://api.ebay.com/oauth/api_scope/sell.marketing" ,
+            "https://api.ebay.com/oauth/api_scope/sell.marketing",
         ]
         
         # ✅ ALWAYS USE WEB REDIRECT (eBay requirement)
@@ -65,7 +63,7 @@ class eBayOAuth:
         }
         
         auth_url = f"{self.auth_url}?{requests.compat.urlencode(params)}"
-        logger.info(f"Generated auth URL with state: {state} (duration: permanent)")
+        logger.info(f"Generated auth URL with scopes: {[s.split('/')[-1] for s in scopes]}")
         
         return auth_url, state
     
