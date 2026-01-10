@@ -44,6 +44,16 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+@app.get("/health")
+@app.get("/health/")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": app.version,
+        "service": "resell-pro-api"
+    }
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
