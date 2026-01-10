@@ -208,12 +208,6 @@ def extract_vision_keywords(vision_analysis: Dict) -> List[str]:
         keywords.append(color)
         keywords.append(f"{color} color")
         
-    # From size/scale indicators
-    if vision_analysis.get('size_category'):
-        size = vision_analysis['size_category'].lower()
-        keywords.append(size)
-        keywords.append(f"{size} size")
-    
     return list(set(keywords))
 
 # ============= EBAY OAUTH ENDPOINTS =============
@@ -505,7 +499,6 @@ def analyze_image_with_vision(image_data: bytes) -> Dict:
             "detected_objects": [],
             "suggested_keywords": [],
             "dominant_color": None,
-            "size_category": "medium"
         }
                 
 
